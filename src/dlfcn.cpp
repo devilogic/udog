@@ -45,6 +45,12 @@ static const char *dl_errors[] = {
 
 pthread_mutex_t dl_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 
+/********************************************************************************/
+/* 引入外部变量                                                                   */
+/********************************************************************************/
+#include "options.h"
+extern struct options_t* g_opts;
+
 static void set_dlerror(int err)
 {
     format_buffer(dl_err_buf, sizeof(dl_err_buf), "%s: %s", dl_errors[err],
@@ -63,7 +69,8 @@ void *dlopen(const char *filename, int flag)
         set_dlerror(DL_ERR_CANNOT_LOAD_LIBRARY);
     } else {
 		/* 调用构造函数 */
-        soinfo_call_constructors(ret);
+        //soinfo_call_constructors(ret);
+		soinfo_call_constructors_from_dlopen(ret);
         ret->refcount++;
     }
     pthread_mutex_unlock(&dl_lock);

@@ -61,6 +61,8 @@
 #include "linker_phdr.h"
 #include "linker.h"
 #include "xdlfcn.h"
+#include "options.h"
+struct options_t* g_opts = NULL;
 
 #define ALLOW_SYMBOLS_FROM_MAIN 1
 #define SO_MAX 128
@@ -96,14 +98,14 @@
 #if defined(ANDROID_ARM_LINKER)
 //                     0000000 00011111 111112 22222222 2333333 333344444444445555555
 //                     0123456 78901234 567890 12345678 9012345 678901234567890123456
-#define ANDROID_LIBDL_STRTAB \
-                      "dlopen\0dlclose\0dlsym\0dlerror\0dladdr\0dl_unwind_find_exidx\0"
+#define ANDROID_LIBDL_STRTAB											\
+	"dlopen\0dlclose\0dlsym\0dlerror\0dladdr\0dl_unwind_find_exidx\0"
 
 #elif defined(ANDROID_X86_LINKER) || defined(ANDROID_MIPS_LINKER)
 //                     0000000 00011111 111112 22222222 2333333 3333444444444455
 //                     0123456 78901234 567890 12345678 9012345 6789012345678901
-#define ANDROID_LIBDL_STRTAB \
-                      "dlopen\0dlclose\0dlsym\0dlerror\0dladdr\0dl_iterate_phdr\0"
+#define ANDROID_LIBDL_STRTAB										\
+	"dlopen\0dlclose\0dlsym\0dlerror\0dladdr\0dl_iterate_phdr\0"
 #else
 #error Unsupported architecture. Only ARM, MIPS, and x86 are presently supported.
 #endif
@@ -246,6 +248,7 @@ static void fill_libdl_info() {
 	libdl_info.nchain = 7;
 	libdl_info.bucket = libdl_buckets;
 	libdl_info.chain = libdl_chains;
+	libdl_info.constructors_called = 1;
 }
 /********************************************************************************/
 
@@ -253,7 +256,9 @@ static void fill_libdl_info() {
 static int soinfo_link_image(soinfo *si);
 
 static int socount = 0;                   /* 已经加载SO库的数量 */
+static int soncount= 0;
 static soinfo sopool[SO_MAX];             /* SO库的缓存 */
+static char soneeded[SO_MAX][128];        /* 作为主程序加载的so的库的名称 */
 static soinfo *freelist = NULL;
 static soinfo *solist = &libdl_info;      /* 已加载的库队列 */
 static soinfo *sonext = &libdl_info;      /* 已加载的库队列节点指针 */
@@ -307,8 +312,8 @@ static void count_relocation(RelocationKind) {
 
 #if COUNT_PAGES
 static unsigned bitmask[4096];
-#define MARK(offset) \
-    do { \
+#define MARK(offset)													\
+    do {																\
         bitmask[((offset) >> 12) >> 3] |= (1 << (((offset) >> 12) & 7)); \
     } while(0)
 #else
@@ -334,12 +339,12 @@ static unsigned bitmask[4096];
 static char tmp_err_buf[768];
 static char __linker_dl_err_buf[768];
 #define BASENAME(s) (strrchr(s, '/') != NULL ? strrchr(s, '/') + 1 : s)
-#define DL_ERR(fmt, x...) \
-    do { \
+#define DL_ERR(fmt, x...)												\
+    do {																\
         format_buffer(__linker_dl_err_buf, sizeof(__linker_dl_err_buf), \
-                      "%s(%s:%d): " fmt, \
+                      "%s(%s:%d): " fmt,								\
                       __FUNCTION__, BASENAME(__FILE__), __LINE__, ##x); \
-        ERROR(fmt "\n", ##x); \
+        ERROR(fmt "\n", ##x);											\
     } while(0)
 
 const char *linker_get_error(void)
@@ -355,7 +360,7 @@ const char *linker_get_error(void)
 extern "C" void __attribute__((noinline)) __attribute__((visibility("default"))) rtld_db_dlactivity(void);
 
 static r_debug _r_debug = {1, NULL, &rtld_db_dlactivity,
-                                  RT_CONSISTENT, 0};
+						   RT_CONSISTENT, 0};
 static link_map* r_debug_tail = 0;
 
 static pthread_mutex_t _r_debug_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -470,12 +475,44 @@ static soinfo *soinfo_alloc(const char *name)
         freelist->next = NULL;
     }
 
+	/* 从这里可以看出添加到soinfo链表,并不影响第一个链接节点 */
     soinfo* si = freelist;
     freelist = freelist->next;
 
     /* Make sure we get a clean block of soinfo */
     memset(si, 0, sizeof(soinfo));
     strlcpy((char*) si->name, name, sizeof(si->name));
+    sonext->next = si;
+    si->next = NULL;
+    si->refcount = 0;
+    sonext = si;
+
+    TRACE("%5d name %s: allocated soinfo @ %p\n", pid, name, si);
+    return si;
+}
+
+static soinfo *soinfo_add(soinfo* isi)
+{
+	const char* name = isi->name;
+    /* The freelist is populated when we call soinfo_free(), which in turn is
+       done only by dlclose(), which is not likely to be used.
+    */
+    if (!freelist) {
+		/* 加载库数量达到最大 */
+        if (socount == SO_MAX) {
+            DL_ERR("too many libraries when loading \"%s\"", name);
+            return NULL;
+        }
+        freelist = sopool + socount++;
+        freelist->next = NULL;
+    }
+
+    soinfo* si = freelist;
+    freelist = freelist->next;
+
+    /* Make sure we get a clean block of soinfo */
+    memset(si, 0, sizeof(soinfo));
+	memcpy(si, isi, sizeof(soinfo));
     sonext->next = si;
     si->next = NULL;
     si->refcount = 0;
@@ -539,7 +576,7 @@ _Unwind_Ptr dl_unwind_find_exidx(_Unwind_Ptr pc, int *pcount)
             return (_Unwind_Ptr)si->ARM_exidx;
         }
     }
-   *pcount = 0;
+	*pcount = 0;
     return NULL;
 }
 
@@ -590,8 +627,8 @@ static Elf32_Sym *soinfo_elf_lookup(soinfo *si, unsigned hash, const char *name)
         s = symtab + n;
         if(strcmp(strtab + s->st_name, name)) continue;
 
-            /* only concern ourselves with global and weak symbol definitions */
-		    /* 这里搜寻到是弱符号与全局变量，如果非未定义则返回 */
+		/* only concern ourselves with global and weak symbol definitions */
+		/* 这里搜寻到是弱符号与全局变量，如果非未定义则返回 */
         switch(ELF32_ST_BIND(s->st_info)){
         case STB_GLOBAL:
         case STB_WEAK:
@@ -688,7 +725,7 @@ soinfo_do_lookup(soinfo *si, const char *name, Elf32_Addr *offset,
     }
 #endif
 
-done:
+ done:
     if(s != NULL) {
         TRACE_TYPE(LOOKUP, "%5d si %s sym %s s->st_value = 0x%08x, "
                    "found in %s, base = 0x%08x, load bias = 0x%08x\n",
@@ -703,13 +740,14 @@ done:
 
 /* This is used by dl_sym().  It performs symbol lookup only within the
    specified soinfo object and not in any of its dependencies.
- */
+*/
 Elf32_Sym *soinfo_lookup(soinfo *si, const char *name)
 {
     return soinfo_elf_lookup(si, elfhash(name), name);
 }
 
 /* This is used by dl_sym().  It performs a global symbol lookup.
+ * 由dl_sym()进行调用.
  */
 Elf32_Sym *lookup(const char *name, soinfo **found, soinfo *start)
 {
@@ -722,15 +760,15 @@ Elf32_Sym *lookup(const char *name, soinfo **found, soinfo *start)
     }
 
     for(si = start; (s == NULL) && (si != NULL); si = si->next)
-    {
-        if(si->flags & FLAG_ERROR)
-            continue;
-        s = soinfo_elf_lookup(si, elf_hash, name);
-        if (s != NULL) {
-            *found = si;
-            break;
-        }
-    }
+		{
+			if(si->flags & FLAG_ERROR)
+				continue;
+			s = soinfo_elf_lookup(si, elf_hash, name);
+			if (s != NULL) {
+				*found = si;
+				break;
+			}
+		}
 
     if(s != NULL) {
         TRACE_TYPE(LOOKUP, "%5d %s s->st_value = 0x%08x, "
@@ -747,11 +785,11 @@ soinfo *find_containing_library(const void *addr)
     soinfo *si;
 
     for(si = solist; si != NULL; si = si->next)
-    {
-        if((unsigned)addr >= si->base && (unsigned)addr - si->base < si->size) {
-            return si;
-        }
-    }
+		{
+			if((unsigned)addr >= si->base && (unsigned)addr - si->base < si->size) {
+				return si;
+			}
+		}
 
     return NULL;
 }
@@ -785,8 +823,8 @@ static void dump(soinfo *si)
 
     for(n = 0; n < si->nchain; n++) {
         TRACE("%5d %04d> %08x: %02x %04x %08x %08x %s\n", pid, n, s,
-               s->st_info, s->st_shndx, s->st_value, s->st_size,
-               si->strtab + s->st_name);
+			  s->st_info, s->st_shndx, s->st_value, s->st_size,
+			  si->strtab + s->st_name);
         s++;
     }
 }
@@ -919,9 +957,10 @@ struct scoped_fd {
     int fd;
 };
 
+/* so指针结构 */
 struct soinfo_ptr {
     soinfo_ptr(const char* name) {
-        const char* bname = strrchr(name, '/');
+        const char* bname = strrchr(name, '/');          /* 只取文件名 */
         ptr = soinfo_alloc(bname ? bname + 1 : name);
     }
     ~soinfo_ptr() {
@@ -1089,86 +1128,7 @@ static soinfo *find_loaded_library(const char *name)
     return NULL;
 }
 
-static void call_array(unsigned *ctor, int count, int reverse);
-void test_tdog_call(soinfo* si) {
-    Elf32_Addr base = si->load_bias;
-    const Elf32_Phdr *phdr = si->phdr;
-	unsigned* d;
-    int phnum = si->phnum;
-	unsigned dynamic_count;
-
-    if (si->constructors_called)
-        return;
-
-    si->constructors_called = 1;
-
-	phdr_table_get_dynamic_section(phdr, phnum, base, &si->dynamic,
-                                   &dynamic_count);
-    if (si->dynamic == NULL) {
-		/* 如果不是重定位链接器则报错 */
-		DL_ERR("missing PT_DYNAMIC?!");
-    } else {
-		DEBUG("%5d dynamic = %p\n", pid, si->dynamic);
-    }
-
-	/* 从动态节中提取有用的信息 */
-    for(d = si->dynamic; *d; d++){
-        DEBUG("%5d d = %p, d[0] = 0x%08x d[1] = 0x%08x\n", pid, d, d[0], d[1]);
-        switch(*d++){
-        case DT_INIT:
-			/* 入口点 */
-            si->init_func = (void (*)(void))(base + *d);
-            DEBUG("%5d %s constructors (init func) found at %p\n",
-                  pid, si->name, si->init_func);
-            break;
-        case DT_FINI:
-			/* 析构函数 */
-            si->fini_func = (void (*)(void))(base + *d);
-            DEBUG("%5d %s destructors (fini func) found at %p\n",
-                  pid, si->name, si->fini_func);
-            break;
-        case DT_INIT_ARRAY:
-			/* 初始化函数队列 */
-            si->init_array = (unsigned *)(base + *d);
-            DEBUG("%5d %s constructors (init_array) found at %p\n",
-                  pid, si->name, si->init_array);
-            break;
-        case DT_INIT_ARRAYSZ:
-			/* 初始化函数队列数量 */
-            si->init_array_count = ((unsigned)*d) / sizeof(Elf32_Addr);
-            break;
-        case DT_FINI_ARRAY:
-			/* 析构函数队列 */
-            si->fini_array = (unsigned *)(base + *d);
-            DEBUG("%5d %s destructors (fini_array) found at %p\n",
-                  pid, si->name, si->fini_array);
-            break;
-        case DT_FINI_ARRAYSZ:
-			/* 析构函数数量 */
-            si->fini_array_count = ((unsigned)*d) / sizeof(Elf32_Addr);
-            break;
-		default:
-			break;
-		}
-	}
-
-	/* 调用初始化函数 */
-    if (si->init_func) {
-        TRACE("[ %5d Calling init_func @ 0x%08x for '%s' ]\n", pid,
-              (unsigned)si->init_func, si->name);
-        si->init_func();
-        TRACE("[ %5d Done calling init_func for '%s' ]\n", pid, si->name);
-    }
-
-	/* 初始化队列 */
-    if (si->init_array) {
-        TRACE("[ %5d Calling init_array @ 0x%08x [%d] for '%s' ]\n", pid,
-              (unsigned)si->init_array, si->init_array_count, si->name);
-        call_array(si->init_array, si->init_array_count, 0);
-        TRACE("[ %5d Done calling init_array for '%s' ]\n", pid, si->name);
-    }
-}
-
+//static void call_array(unsigned *ctor, int count, int reverse);
 /* 根据名称找so库 */
 soinfo *find_library(const char *name)
 {
@@ -1202,8 +1162,10 @@ soinfo *find_library(const char *name)
     if(si == NULL)
         return NULL;
 
-	/* 测试tdog */
-	test_tdog_call(si);
+	// #ifdef TEST_TDOG_CALL
+	// 	/* 测试tdog */
+	// 	test_tdog_call(si);
+	// #endif
 
     return init_library(si);
 }
@@ -1320,8 +1282,8 @@ static int soinfo_relocate(soinfo *si, Elf32_Rel *rel, unsigned count,
                    - Zero if the relocation type is absolute
                    - The address of the place if the relocation is pc-relative
                    - The address of nominal base address if the relocation
-                     type is base-relative.
-                  */
+				   type is base-relative.
+				*/
 
                 switch (type) {
 #if defined(ANDROID_ARM_LINKER)
@@ -1355,20 +1317,20 @@ static int soinfo_relocate(soinfo *si, Elf32_Rel *rel, unsigned count,
 #endif /* ANDROID_ARM_LINKER */
                 default:
                     DL_ERR("unknown weak reloc type %d @ %p (%d)",
-                                 type, rel, (int) (rel - start));
+						   type, rel, (int) (rel - start));
                     return -1;
                 }
             } else {
                 /* We got a definition.  */
 				/* 我们获取一个定义 */
-// #if 0
-//                 if((base == 0) && (si->base != 0)){
-//                         /* linking from libraries to main image is bad */
-//                     DL_ERR("cannot locate \"%s\"...",
-//                            strtab + symtab[sym].st_name);
-//                     return -1;
-//                 }
-// #endif
+				// #if 0
+				//                 if((base == 0) && (si->base != 0)){
+				//                         /* linking from libraries to main image is bad */
+				//                     DL_ERR("cannot locate \"%s\"...",
+				//                            strtab + symtab[sym].st_name);
+				//                     return -1;
+				//                 }
+				// #endif
 				/* 确定符号地址 
 				 * offset 保存了当前符号所在库的内存加载地址
 				 * s->st_value 表示了当前符号在它所在库相对于加载地址的偏移
@@ -1381,9 +1343,9 @@ static int soinfo_relocate(soinfo *si, Elf32_Rel *rel, unsigned count,
             s = NULL;
         }
 
-/* TODO: This is ugly. Split up the relocations by arch into
- * different files.
- */
+		/* TODO: This is ugly. Split up the relocations by arch into
+		 * different files.
+		 */
         switch(type){
 #if defined(ANDROID_ARM_LINKER)
         case R_ARM_JUMP_SLOT:
@@ -1430,14 +1392,14 @@ static int soinfo_relocate(soinfo *si, Elf32_Rel *rel, unsigned count,
             *((unsigned*)reloc) = sym_addr;
             break;
 #elif defined(ANDROID_MIPS_LINKER)
-    case R_MIPS_JUMP_SLOT:
+		case R_MIPS_JUMP_SLOT:
             count_relocation(kRelocAbsolute);
             MARK(rel->r_offset);
             TRACE_TYPE(RELO, "%5d RELO JMP_SLOT %08x <- %08x %s\n", pid,
                        reloc, sym_addr, sym_name);
             *((unsigned*)reloc) = sym_addr;
             break;
-    case R_MIPS_REL32:
+		case R_MIPS_REL32:
             count_relocation(kRelocAbsolute);
             MARK(rel->r_offset);
             TRACE_TYPE(RELO, "%5d RELO REL32 %08x <- %08x %s\n", pid,
@@ -1592,12 +1554,21 @@ static int mips_relocate_got(soinfo* si, soinfo* needed[]) {
              * For reference see NetBSD link loader
              * http://cvsweb.netbsd.org/bsdweb.cgi/src/libexec/ld.elf_so/arch/mips/mips_reloc.c?rev=1.53&content-type=text/x-cvsweb-markup
              */
-             *got = base + s->st_value;
+			*got = base + s->st_value;
         }
     }
     return 0;
 }
 #endif
+
+static bool query_needed_called(char* name) {
+	for (int i = 0; i < soncount; i++) {
+		if (strcmp(name, soneeded[i]) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
 
 /* Please read the "Initialization and Termination functions" functions.
  * of the linker design note in bionic/linker/README.TXT to understand
@@ -1636,18 +1607,22 @@ static void call_array(unsigned *ctor, int count, int reverse)
     }
 }
 
+/* 调用预初始化库的构造函数 */
 static void soinfo_call_preinit_constructors(soinfo *si)
 {
-  TRACE("[ %5d Calling preinit_array @ 0x%08x [%d] for '%s' ]\n",
-      pid, (unsigned)si->preinit_array, si->preinit_array_count,
-      si->name);
-  call_array(si->preinit_array, si->preinit_array_count, 0);
-  TRACE("[ %5d Done calling preinit_array for '%s' ]\n", pid, si->name);
+	TRACE("[ %5d Calling preinit_array @ 0x%08x [%d] for '%s' ]\n",
+		  pid, (unsigned)si->preinit_array, si->preinit_array_count,
+		  si->name);
+	call_array(si->preinit_array, si->preinit_array_count, 0);
+	TRACE("[ %5d Done calling preinit_array for '%s' ]\n", pid, si->name);
 }
 
 /* 调用构造函数 */
 void soinfo_call_constructors(soinfo *si)
 {
+	if (query_needed_called(si->name))
+		si->constructors_called = 1;
+
     if (si->constructors_called)
         return;
 
@@ -1666,8 +1641,8 @@ void soinfo_call_constructors(soinfo *si)
 
 	/* 共享文件不能有preinit_array表 */
     if (!(si->flags & FLAG_EXE) && si->preinit_array) {
-      DL_ERR("shared library \"%s\" has a preinit_array table @ 0x%08x. "
-          "This is INVALID.", si->name, (unsigned) si->preinit_array);
+		DL_ERR("shared library \"%s\" has a preinit_array table @ 0x%08x. "
+			   "This is INVALID.", si->name, (unsigned) si->preinit_array);
     }
 
     if (si->dynamic) {
@@ -1680,46 +1655,119 @@ void soinfo_call_constructors(soinfo *si)
                            si->name);
                 } else {
 					/* 调用依赖库的构造函数 */
-                    soinfo_call_constructors(lsi);
+					soinfo_call_constructors(lsi);
                 }
             }
         }
     }
 
-	/* 调用初始化函数 */
-    if (si->init_func) {
-        TRACE("[ %5d Calling init_func @ 0x%08x for '%s' ]\n", pid,
-              (unsigned)si->init_func, si->name);
-        si->init_func();
-        TRACE("[ %5d Done calling init_func for '%s' ]\n", pid, si->name);
+	if (g_opts->call_dt_init) {
+		/* 调用初始化函数 */
+		if (si->init_func) {
+			TRACE("[ %5d Calling init_func @ 0x%08x for '%s' ]\n", pid,
+				  (unsigned)si->init_func, si->name);
+			si->init_func();
+			TRACE("[ %5d Done calling init_func for '%s' ]\n", pid, si->name);
+		}
+	}
+
+	if (g_opts->call_dt_init_array) {
+		/* 初始化队列 */
+		if (si->init_array) {
+			TRACE("[ %5d Calling init_array @ 0x%08x [%d] for '%s' ]\n", pid,
+				  (unsigned)si->init_array, si->init_array_count, si->name);
+			call_array(si->init_array, si->init_array_count, 0);
+			TRACE("[ %5d Done calling init_array for '%s' ]\n", pid, si->name);
+		}
+	}
+
+}
+
+/* 由dlopen调用 */
+void soinfo_call_constructors_from_dlopen(soinfo *si) {
+	if (query_needed_called(si->name))
+		si->constructors_called = 1;
+
+    if (si->constructors_called)
+        return;
+
+    // Set this before actually calling the constructors, otherwise it doesn't
+    // protect against recursive constructor calls. One simple example of
+    // constructor recursion is the libc debug malloc, which is implemented in
+    // libc_malloc_debug_leak.so:
+    // 1. The program depends on libc, so libc's constructor is called here.
+    // 2. The libc constructor calls dlopen() to load libc_malloc_debug_leak.so.
+    // 3. dlopen() calls soinfo_call_constructors() with the newly created
+    //    soinfo for libc_malloc_debug_leak.so.
+    // 4. The debug so depends on libc, so soinfo_call_constructors() is
+    //    called again with the libc soinfo. If it doesn't trigger the early-
+    //    out above, the libc constructor will be called again (recursively!).
+    si->constructors_called = 1;
+
+	/* 共享文件不能有preinit_array表 */
+    if (!(si->flags & FLAG_EXE) && si->preinit_array) {
+		DL_ERR("shared library \"%s\" has a preinit_array table @ 0x%08x. "
+			   "This is INVALID.", si->name, (unsigned) si->preinit_array);
     }
 
-	/* 初始化队列 */
-    if (si->init_array) {
-        TRACE("[ %5d Calling init_array @ 0x%08x [%d] for '%s' ]\n", pid,
-              (unsigned)si->init_array, si->init_array_count, si->name);
-        call_array(si->init_array, si->init_array_count, 0);
-        TRACE("[ %5d Done calling init_array for '%s' ]\n", pid, si->name);
-    }
+    // if (si->dynamic) {
+    //     unsigned *d;
+    //     for(d = si->dynamic; *d; d += 2) {
+    //         if(d[0] == DT_NEEDED){
+    //             soinfo* lsi = find_loaded_library(si->strtab + d[1]);
+    //             if (!lsi) {
+    //                 DL_ERR("\"%s\": could not initialize dependent library",
+    //                        si->name);
+    //             } else {
+	// 				/* 调用依赖库的构造函数 */
+	// 				soinfo_call_constructors(lsi);
+    //             }
+    //         }
+    //     }
+    // }
+
+	if (g_opts->call_dt_init) {
+		/* 调用初始化函数 */
+		if (si->init_func) {
+			TRACE("[ %5d Calling init_func @ 0x%08x for '%s' ]\n", pid,
+				  (unsigned)si->init_func, si->name);
+			si->init_func();
+			TRACE("[ %5d Done calling init_func for '%s' ]\n", pid, si->name);
+		}
+	}
+
+	if (g_opts->call_dt_init_array) {
+		/* 初始化队列 */
+		if (si->init_array) {
+			TRACE("[ %5d Calling init_array @ 0x%08x [%d] for '%s' ]\n", pid,
+				  (unsigned)si->init_array, si->init_array_count, si->name);
+			call_array(si->init_array, si->init_array_count, 0);
+			TRACE("[ %5d Done calling init_array for '%s' ]\n", pid, si->name);
+		}
+	}
 
 }
 
 /* 调用析构函数 */
 static void call_destructors(soinfo *si)
 {
-    if (si->fini_array) {
-        TRACE("[ %5d Calling fini_array @ 0x%08x [%d] for '%s' ]\n", pid,
-              (unsigned)si->fini_array, si->fini_array_count, si->name);
-        call_array(si->fini_array, si->fini_array_count, 1);
-        TRACE("[ %5d Done calling fini_array for '%s' ]\n", pid, si->name);
-    }
+	if (g_opts->call_dt_finit) {
+		if (si->fini_array) {
+			TRACE("[ %5d Calling fini_array @ 0x%08x [%d] for '%s' ]\n", pid,
+				  (unsigned)si->fini_array, si->fini_array_count, si->name);
+			call_array(si->fini_array, si->fini_array_count, 1);
+			TRACE("[ %5d Done calling fini_array for '%s' ]\n", pid, si->name);
+		}
+	}
 
-    if (si->fini_func) {
-        TRACE("[ %5d Calling fini_func @ 0x%08x for '%s' ]\n", pid,
-              (unsigned)si->fini_func, si->name);
-        si->fini_func();
-        TRACE("[ %5d Done calling fini_func for '%s' ]\n", pid, si->name);
-    }
+	if (g_opts->call_dt_finit_array) {
+		if (si->fini_func) {
+			TRACE("[ %5d Calling fini_func @ 0x%08x for '%s' ]\n", pid,
+				  (unsigned)si->fini_func, si->name);
+			si->fini_func();
+			TRACE("[ %5d Done calling fini_func for '%s' ]\n", pid, si->name);
+		}
+	}
 }
 
 /* Force any of the closed stdin, stdout and stderr to be associated with
@@ -1801,7 +1849,7 @@ static int soinfo_link_image(soinfo *si)
     if (!relocating_linker) {
         INFO("[ %5d linking %s ]\n", pid, si->name);
         DEBUG("%5d si->base = 0x%08x si->flags = 0x%08x\n", pid,
-            si->base, si->flags);
+			  si->base, si->flags);
     }
 
 	/* 展开动态段 */
@@ -1883,8 +1931,8 @@ static int soinfo_link_image(soinfo *si)
 #endif
 #endif
             break;
-         case DT_RELA:
-			 /* 带偏移的重定位项 */
+		case DT_RELA:
+			/* 带偏移的重定位项 */
             DL_ERR("DT_RELA not supported");
             goto fail;
         case DT_INIT:
@@ -1937,12 +1985,12 @@ static int soinfo_link_image(soinfo *si)
         case DT_STRSZ:
         case DT_SYMENT:
         case DT_RELENT:
-             break;
+			break;
         case DT_MIPS_RLD_MAP:
             // Set the DT_MIPS_RLD_MAP entry to the address of _r_debug for GDB.
             {
-              r_debug** dp = (r_debug**) *d;
-              *dp = &_r_debug;
+				r_debug** dp = (r_debug**) *d;
+				*dp = &_r_debug;
             }
             break;
         case DT_MIPS_RLD_VERSION:
@@ -1980,7 +2028,7 @@ static int soinfo_link_image(soinfo *si)
     }
 
     DEBUG("%5d si->base = 0x%08x, si->strtab = %p, si->symtab = %p\n",
-           pid, si->base, si->strtab, si->symtab);
+		  pid, si->base, si->strtab, si->symtab);
 
 	/* 如果符号表与字符串表缺失，则失败 */
     if((si->strtab == 0) || (si->symtab == 0)) {
@@ -1990,45 +2038,55 @@ static int soinfo_link_image(soinfo *si)
 
     /* if this is the main executable, then load all of the preloads now */
 	/* 如果是一个main可执行程序，现在加载所有的预先加载库 */
-    if(si->flags & FLAG_EXE) {
-        int i;
-        memset(preloads, 0, sizeof(preloads));
-        for(i = 0; ldpreload_names[i] != NULL; i++) {
-            soinfo *lsi = find_library(ldpreload_names[i]);
-            if(lsi == 0) {
-                strlcpy(tmp_err_buf, linker_get_error(), sizeof(tmp_err_buf));
-                DL_ERR("could not load library \"%s\" needed by \"%s\"; caused by %s",
-                       ldpreload_names[i], si->name, tmp_err_buf);
-                goto fail;
-            }
-            lsi->refcount++;     /* 增加引用 */
-            preloads[i] = lsi;
-        }
-    }
+	if (g_opts->load_pre_libs) {
+		if(si->flags & FLAG_EXE) {
+			int i;
+			memset(preloads, 0, sizeof(preloads));
+			for(i = 0; ldpreload_names[i] != NULL; i++) {
+				soinfo *lsi = find_library(ldpreload_names[i]);
+				if(lsi == 0) {
+					strlcpy(tmp_err_buf, linker_get_error(), sizeof(tmp_err_buf));
+					DL_ERR("could not load library \"%s\" needed by \"%s\"; caused by %s", ldpreload_names[i], si->name, tmp_err_buf);
+					goto fail;
+				}
+				lsi->refcount++;     /* 增加引用 */
+				preloads[i] = lsi;
+			}
+		}/* end if */
+	} else {
+		if(si->flags & FLAG_EXE) {
+			memset(preloads, 0, sizeof(preloads));
+		}/* end if */
+	}
 
 	/* dynamic_count是一个上对齐的需要库的数量
 	 * DT_NEEDED也是动态段中的一项，所以dynamic_count
 	 * 肯定比依赖库的大小要大
 	 */
-    pneeded = needed = (soinfo**) alloca((1 + dynamic_count) * sizeof(soinfo*));
+	if (g_opts->load_needed_libs) {
+		pneeded = needed = (soinfo**) alloca((1 + dynamic_count) * sizeof(soinfo*));
 
-	/* 遍历动态节 */
-    for(d = si->dynamic; *d; d += 2) {
-		/* 加载依赖库 */
-        if(d[0] == DT_NEEDED){
-            DEBUG("%5d %s needs %s\n", pid, si->name, si->strtab + d[1]);
-            soinfo *lsi = find_library(si->strtab + d[1]);
-            if(lsi == 0) {
-                strlcpy(tmp_err_buf, linker_get_error(), sizeof(tmp_err_buf));
-                DL_ERR("could not load library \"%s\" needed by \"%s\"; caused by %s",
-                       si->strtab + d[1], si->name, tmp_err_buf);
-                goto fail;
-            }
-            *pneeded++ = lsi;
-            lsi->refcount++;
-        }
-    }
-    *pneeded = NULL;
+		/* 遍历动态节 */
+		for(d = si->dynamic; *d; d += 2) {
+			/* 加载依赖库 */
+			if(d[0] == DT_NEEDED){
+				DEBUG("%5d %s needs %s\n", pid, si->name, si->strtab + d[1]);
+				soinfo *lsi = find_library(si->strtab + d[1]);
+				if(lsi == 0) {
+					strlcpy(tmp_err_buf, linker_get_error(), sizeof(tmp_err_buf));
+					DL_ERR("could not load library \"%s\" needed by \"%s\"; caused by %s",
+						   si->strtab + d[1], si->name, tmp_err_buf);
+					goto fail;
+				}
+				*pneeded++ = lsi;
+				lsi->refcount++;
+			}
+		}/* end for */
+		*pneeded = NULL;
+	} else {
+		pneeded = needed = (soinfo**) alloca((1 + dynamic_count) * sizeof(soinfo*));
+		*pneeded = NULL;
+	}
 
 	/* linker自身并无此选项 */
     if (si->has_text_relocations) {
@@ -2094,9 +2152,9 @@ static int soinfo_link_image(soinfo *si)
     /* If this is a SET?ID program, dup /dev/null to opened stdin,
        stdout and stderr to close a security hole described in:
 
-    ftp://ftp.freebsd.org/pub/FreeBSD/CERT/advisories/FreeBSD-SA-02:23.stdio.asc
+	   ftp://ftp.freebsd.org/pub/FreeBSD/CERT/advisories/FreeBSD-SA-02:23.stdio.asc
 
-     */
+	*/
 	/* 如果是一个SET？ID程序,则将stdin重定位到/dev/null设备,并且
 	 * 将stdout与stderr定位到一个关闭的安全描述
 	 */
@@ -2111,7 +2169,7 @@ static int soinfo_link_image(soinfo *si)
 
     return 0;
 
-fail:
+ fail:
     ERROR("failed to link %s\n", si->name);
     si->flags |= FLAG_ERROR;
     return -1;
@@ -2218,7 +2276,7 @@ static unsigned __linker_init_post_relocation(unsigned **elfdata, unsigned linke
 	/* 内核不提供AT_SECURE - 传递到传统模式测试 */
     program_is_setuid = (getuid() != geteuid()) || (getgid() != getegid());
 
-sanitize:
+ sanitize:
     /* Sanitize environment if we're loading a setuid program */
 	/* 如果我们读取到一个setuid程序清洁环境 */
     if (program_is_setuid) {
@@ -2381,16 +2439,16 @@ sanitize:
 #if TIMING
     gettimeofday(&t1,NULL);
     PRINT("LINKER TIME: %s: %d microseconds\n", argv[0], (int) (
-               (((long long)t1.tv_sec * 1000000LL) + (long long)t1.tv_usec) -
-               (((long long)t0.tv_sec * 1000000LL) + (long long)t0.tv_usec)
-               ));
+																(((long long)t1.tv_sec * 1000000LL) + (long long)t1.tv_usec) -
+																(((long long)t0.tv_sec * 1000000LL) + (long long)t0.tv_usec)
+																));
 #endif
 #if STATS
     PRINT("RELO STATS: %s: %d abs, %d rel, %d copy, %d symbol\n", argv[0],
-           linker_stats.count[kRelocAbsolute],
-           linker_stats.count[kRelocRelative],
-           linker_stats.count[kRelocCopy],
-           linker_stats.count[kRelocSymbol]);
+		  linker_stats.count[kRelocAbsolute],
+		  linker_stats.count[kRelocRelative],
+		  linker_stats.count[kRelocCopy],
+		  linker_stats.count[kRelocSymbol]);
 #endif
 #if COUNT_PAGES
     {
@@ -2475,6 +2533,461 @@ get_elf_exec_load_bias(const Elf32_Ehdr* elf)
     return 0;
 }
 
+static void get_needed_name_list(soinfo* si) {
+	/* 初始化 */
+	soncount = 0;
+	strcpy(soneeded[soncount++], "libld.so");
+	unsigned c = 0;
+
+	/* 遍历动态节 */
+	for(unsigned* i = si->dynamic; *i; i += 2) {
+		c++;
+		/* 加载依赖库 */
+		if(i[0] == DT_NEEDED){
+			DEBUG("%5d %s needs %s\n", pid, si->name, si->strtab + i[1]);
+			strcpy(soneeded[soncount++], si->strtab + i[1]);
+		}
+	}/* end for */
+	DEBUG("PT_DYNAMIC has \'%d\' count\n", c);
+}
+
+/* 获取PT_DYNAMIC的内容 */
+static int fill_pt_dynamic(soinfo* si) {
+    unsigned *d;
+    /* "base" might wrap around UINT32_MAX. */
+    Elf32_Addr base = si->load_bias;
+    const Elf32_Phdr *phdr = si->phdr;
+    int phnum = si->phnum;
+    size_t dynamic_count;                                    /* 动态项数量 */
+
+	INFO("[ %5d linking %s ]\n", pid, si->name);
+	DEBUG("%5d si->base = 0x%08x si->flags = 0x%08x\n", pid,
+		  si->base, si->flags);
+
+	/* 展开动态段 */
+    phdr_table_get_dynamic_section(phdr, phnum, base, &si->dynamic,
+                                   &dynamic_count);
+    if (si->dynamic == NULL) {
+		DL_ERR("missing PT_DYNAMIC?!");
+		goto fail;
+    } else {
+		DEBUG("%5d dynamic = %p\n", pid, si->dynamic);
+	}
+
+#ifdef ANDROID_ARM_LINKER
+	/* ARM体系的linker, .ARM.exidx节,可有可无 */
+    (void) phdr_table_get_arm_exidx(phdr, phnum, base,
+                                    &si->ARM_exidx, &si->ARM_exidx_count);
+#endif
+
+	/* 从动态节中提取有用的信息 */
+    for(d = si->dynamic; *d; d++){
+        DEBUG("%5d d = %p, d[0] = 0x%08x d[1] = 0x%08x\n", pid, d, d[0], d[1]);
+        switch(*d++){
+		case DT_NEEDED:
+			DEBUG("%5d d = %p, needed library = %s\n", pid, d, si->strtab + d[1]);
+			break;
+        case DT_HASH:
+			/* HASH表 */
+            si->nbucket = ((unsigned *) (base + *d))[0];
+            si->nchain = ((unsigned *) (base + *d))[1];
+            si->bucket = (unsigned *) (base + *d + 8);
+            si->chain = (unsigned *) (base + *d + 8 + si->nbucket * 4);
+            break;
+        case DT_STRTAB:
+			/* 字符串表 */
+            si->strtab = (const char *) (base + *d);
+            break;
+        case DT_SYMTAB:
+			/* 符号表 */
+            si->symtab = (Elf32_Sym *) (base + *d);
+            break;
+        case DT_PLTREL:
+			/* 延迟重定位 */
+            if(*d != DT_REL) {
+                DL_ERR("DT_RELA not supported");
+                goto fail;
+            }
+            break;
+        case DT_JMPREL:
+			/* 延迟重定位 */
+            si->plt_rel = (Elf32_Rel*) (base + *d);
+            break;
+        case DT_PLTRELSZ:
+			/* 延迟重定位项 */
+            si->plt_rel_count = *d / 8;
+            break;
+        case DT_REL:
+			/* 重定位表 */
+            si->rel = (Elf32_Rel*) (base + *d);
+            break;
+        case DT_RELSZ:
+			/* 重定位项 */
+            si->rel_count = *d / 8;
+            break;
+        case DT_PLTGOT:
+            /* Save this in case we decide to do lazy binding. We don't yet. */
+            si->plt_got = (unsigned *)(base + *d);
+            break;
+        case DT_DEBUG:
+			/* _r_debug地址 GDB专用 */
+#if !defined(ANDROID_MIPS_LINKER)
+			/* 这里是为ARM使用的 */
+#ifdef NOTIFY_GDB
+            // Set the DT_DEBUG entry to the address of _r_debug for GDB
+            *d = (int) &_r_debug;
+#endif
+#endif
+            break;
+		case DT_RELA:
+			/* 带偏移的重定位项 */
+            DL_ERR("DT_RELA not supported");
+            goto fail;
+        case DT_INIT:
+			/* 入口点 */
+            si->init_func = (void (*)(void))(base + *d);
+            DEBUG("%5d %s constructors (init func) found at %p\n",
+                  pid, si->name, si->init_func);
+            break;
+        case DT_FINI:
+			/* 析构函数 */
+            si->fini_func = (void (*)(void))(base + *d);
+            DEBUG("%5d %s destructors (fini func) found at %p\n",
+                  pid, si->name, si->fini_func);
+            break;
+        case DT_INIT_ARRAY:
+			/* 初始化函数队列 */
+            si->init_array = (unsigned *)(base + *d);
+            DEBUG("%5d %s constructors (init_array) found at %p\n",
+                  pid, si->name, si->init_array);
+            break;
+        case DT_INIT_ARRAYSZ:
+			/* 初始化函数队列数量 */
+            si->init_array_count = ((unsigned)*d) / sizeof(Elf32_Addr);
+            break;
+        case DT_FINI_ARRAY:
+			/* 析构函数队列 */
+            si->fini_array = (unsigned *)(base + *d);
+            DEBUG("%5d %s destructors (fini_array) found at %p\n",
+                  pid, si->name, si->fini_array);
+            break;
+        case DT_FINI_ARRAYSZ:
+			/* 析构函数数量 */
+            si->fini_array_count = ((unsigned)*d) / sizeof(Elf32_Addr);
+            break;
+        case DT_PREINIT_ARRAY:
+            si->preinit_array = (unsigned *)(base + *d);
+            DEBUG("%5d %s constructors (preinit_array) found at %p\n",
+                  pid, si->name, si->preinit_array);
+            break;
+        case DT_PREINIT_ARRAYSZ:
+            si->preinit_array_count = ((unsigned)*d) / sizeof(Elf32_Addr);
+            break;
+        case DT_TEXTREL:
+			/* 当没有PIC选项时，直接作用于代码节的重定位表 */
+            si->has_text_relocations = true;
+            break;
+#if defined(ANDROID_MIPS_LINKER)
+			/* 这里是MIPS专用，跳过 */
+        case DT_NEEDED:
+        case DT_STRSZ:
+        case DT_SYMENT:
+        case DT_RELENT:
+			break;
+        case DT_MIPS_RLD_MAP:
+            // Set the DT_MIPS_RLD_MAP entry to the address of _r_debug for GDB.
+            {
+				r_debug** dp = (r_debug**) *d;
+				*dp = &_r_debug;
+            }
+            break;
+        case DT_MIPS_RLD_VERSION:
+        case DT_MIPS_FLAGS:
+        case DT_MIPS_BASE_ADDRESS:
+        case DT_MIPS_UNREFEXTNO:
+        case DT_MIPS_RWPLT:
+            break;
+
+        case DT_MIPS_PLTGOT:
+#if 0
+            /* not yet... */
+            si->mips_pltgot = (unsigned *)(si->base + *d);
+#endif
+            break;
+
+        case DT_MIPS_SYMTABNO:
+            si->mips_symtabno = *d;
+            break;
+
+        case DT_MIPS_LOCAL_GOTNO:
+            si->mips_local_gotno = *d;
+            break;
+
+        case DT_MIPS_GOTSYM:
+            si->mips_gotsym = *d;
+            break;
+
+        default:
+            DEBUG("%5d Unused DT entry: type 0x%08x arg 0x%08x\n",
+                  pid, d[-1], d[0]);
+            break;
+#endif
+        }
+    }
+
+    DEBUG("%5d si->base = 0x%08x, si->strtab = %p, si->symtab = %p\n",
+		  pid, si->base, si->strtab, si->symtab);
+
+	/* 如果符号表与字符串表缺失，则失败 */
+    if((si->strtab == 0) || (si->symtab == 0)) {
+        DL_ERR("missing essential tables");
+        goto fail;
+    }
+
+	/* 填充初始化的表 */
+	get_needed_name_list(si);
+
+	return 0;
+
+ fail:
+    ERROR("failed to fill PT_DYNAMIC info %s\n", si->name);
+    si->flags |= FLAG_ERROR;
+    return -1;
+}
+
+static int fill_env(unsigned **elfdata, soinfo* isi) {
+	int argc = (int) *elfdata;
+    char **argv = (char**) (elfdata + 1);
+    unsigned *vecs = (unsigned*) (argv + argc + 1);
+    unsigned *v;
+    soinfo *si;
+    int i;
+    const char *ldpath_env = NULL;
+    const char *ldpreload_env = NULL;
+	unsigned linker_base = isi->base;
+
+#ifdef NODEBUG
+    /* NOTE: we store the elfdata pointer on a special location
+     *       of the temporary TLS area in order to pass it to
+     *       the C Library's runtime initializer.
+     *
+     *       The initializer must clear the slot and reset the TLS
+     *       to point to a different location to ensure that no other
+     *       shared library constructor can access it.
+     */
+	/* TLS初始化
+	 */
+    __libc_init_tls(elfdata);
+#endif
+
+	pid = getpid();
+
+#if TIMING
+    struct timeval t0, t1;
+    gettimeofday(&t0, 0);
+#endif
+
+    /* Initialize environment functions, and get to the ELF aux vectors table */
+	/* 初始化环境函数，获取ELF辅助向量表 */
+    vecs = linker_env_init(vecs);
+
+    /* Check auxv for AT_SECURE first to see if program is setuid, setgid,
+       has file caps, or caused a SELinux/AppArmor domain transition. */
+	/* 首先检查AT_SECURE的auxv遍历，如果程序被设置到setuid,setgid */
+    for (v = vecs; v[0]; v += 2) {
+        if (v[0] == AT_SECURE) {
+            /* kernel told us whether to enable secure mode */
+			/* 内核通知是否开启安全模式 */
+            program_is_setuid = v[1];
+            goto sanitize;
+        }
+    }
+
+    /* Kernel did not provide AT_SECURE - fall back on legacy test. */
+	/* 内核不提供AT_SECURE - 传递到传统模式测试 */
+    program_is_setuid = (getuid() != geteuid()) || (getgid() != getegid());
+
+ sanitize:
+    /* Sanitize environment if we're loading a setuid program */
+	/* 如果我们读取到一个setuid程序清洁环境 */
+    if (program_is_setuid) {
+        linker_env_secure();
+    }
+
+#ifdef NOTIFY_GDB
+	/* 调试器初始化 */
+    debugger_init();
+#endif
+
+    /* Get a few environment variables */
+    {
+#if LINKER_DEBUG
+		/* 调试链接器 */
+        // const char* env;
+        // env = linker_env_get("DEBUG"); /* XXX: TODO: Change to LD_DEBUG */
+        // if (env)
+        //     debug_verbosity = atoi(env);
+#endif
+
+        /* Normally, these are cleaned by linker_env_secure, but the test
+         * against program_is_setuid doesn't cost us anything */
+		/* 正常状况下，如果非setuid程序则获取
+		 * LD_LIBRARY_PATH
+		 * LD_PRELOAD
+		 */
+        if (!program_is_setuid) {
+            ldpath_env = linker_env_get("LD_LIBRARY_PATH");
+            ldpreload_env = linker_env_get("LD_PRELOAD");
+        }
+    }
+
+    INFO("[ android linker & debugger ]\n");
+    DEBUG("%5d elfdata @ 0x%08x\n", pid, (unsigned)elfdata);
+
+	/* 分配一个sinfo结构的内存 */
+    si = soinfo_add(isi);
+    if(si == 0) {
+        exit(-1);
+    }
+
+    /* bootstrap the link map, the main exe always needs to be first */
+	/* link_map是针对调试器使用的 */
+    si->flags |= FLAG_EXE;
+#ifdef NOTIFY_GDB
+    link_map* map = &(si->linkmap);
+
+    map->l_addr = 0;
+    map->l_name = argv[0];
+    map->l_prev = NULL;
+    map->l_next = NULL;
+
+    _r_debug.r_map = map;
+    r_debug_tail = map;
+
+	/* gdb expects the linker to be in the debug shared object list.
+	 * Without this, gdb has trouble locating the linker's ".text"
+	 * and ".plt" sections. Gdb could also potentially use this to
+	 * relocate the offset of our exported 'rtld_db_dlactivity' symbol.
+	 * Don't use soinfo_alloc(), because the linker shouldn't
+	 * be on the soinfo list.
+	 */
+#endif
+
+#ifdef NOTIFY_GDB
+	soinfo linker_soinfo;
+	/* 设定linker的信息 */
+    strlcpy((char*) linker_soinfo.name, "/system/bin/linker", sizeof linker_soinfo.name);
+    linker_soinfo.flags = 0;
+    linker_soinfo.base = linker_base;
+    /*
+     * Set the dynamic field in the link map otherwise gdb will complain with
+     * the following:
+     *   warning: .dynamic section for "/system/bin/linker" is not at the
+     *   expected address (wrong library or version mismatch?)
+     */
+    Elf32_Ehdr *elf_hdr = (Elf32_Ehdr *) linker_base;
+    Elf32_Phdr *phdr =
+        (Elf32_Phdr *)((unsigned char *) linker_base + elf_hdr->e_phoff);
+    phdr_table_get_dynamic_section(phdr, elf_hdr->e_phnum, linker_base,
+                                   &linker_soinfo.dynamic, NULL);
+
+    insert_soinfo_into_debug_map(&linker_soinfo);
+#endif
+
+    /* extract information passed from the kernel */
+	/* 提取从内核传递过来的信息 */
+    while(vecs[0] != 0){
+		/* 程序头地址，程序头数量，入口点 */
+        switch(vecs[0]){
+			// case AT_PHDR:
+			//     si->phdr = (Elf32_Phdr*) vecs[1];
+			//     break;
+			// case AT_PHNUM:
+			//     si->phnum = (int) vecs[1];
+			//     break;
+        case AT_ENTRY:
+            si->entry = vecs[1];
+            break;
+        }
+        vecs += 2;
+    }
+
+    /* Compute the value of si->base. We can't rely on the fact that
+     * the first entry is the PHDR because this will not be true
+     * for certain executables (e.g. some in the NDK unit test suite)
+     */
+    int nn;
+    // si->base = 0;
+    // si->size = phdr_table_get_load_size(si->phdr, si->phnum);
+    // si->load_bias = 0;
+    for ( nn = 0; nn < si->phnum; nn++ ) {
+		/* 如果是头类型 */
+        if (si->phdr[nn].p_type == PT_PHDR) {
+			/* 略过ELF头 */
+            si->load_bias = (Elf32_Addr)si->phdr - si->phdr[nn].p_vaddr;
+            si->base = (Elf32_Addr) si->phdr - si->phdr[nn].p_offset;
+            break;
+        }
+    }
+    //si->dynamic = (unsigned *)-1;
+    si->refcount = 1;
+
+    // Use LD_LIBRARY_PATH and LD_PRELOAD (but only if we aren't setuid/setgid).
+	/* 在非setuid程序的情况下使用LD_LIBRARY_PATH与LD_PRELOAD */
+    parse_LD_LIBRARY_PATH(ldpath_env);
+    parse_LD_PRELOAD(ldpreload_env);
+
+#if ALLOW_SYMBOLS_FROM_MAIN
+    /* Set somain after we've loaded all the libraries in order to prevent
+     * linking of symbols back to the main image, which is not set up at that
+     * point yet.
+     */
+    somain = si;
+#endif
+
+	/* 以下这些是调试辅助信息了 */
+
+#if TIMING
+    gettimeofday(&t1,NULL);
+    PRINT("LINKER TIME: %s: %d microseconds\n", argv[0], (int) (
+																(((long long)t1.tv_sec * 1000000LL) + (long long)t1.tv_usec) -
+																(((long long)t0.tv_sec * 1000000LL) + (long long)t0.tv_usec)
+																));
+#endif
+#if STATS
+    PRINT("RELO STATS: %s: %d abs, %d rel, %d copy, %d symbol\n", argv[0],
+		  linker_stats.count[kRelocAbsolute],
+		  linker_stats.count[kRelocRelative],
+		  linker_stats.count[kRelocCopy],
+		  linker_stats.count[kRelocSymbol]);
+#endif
+#if COUNT_PAGES
+    {
+        unsigned n;
+        unsigned i;
+        unsigned count = 0;
+        for(n = 0; n < 4096; n++){
+            if(bitmask[n]){
+                unsigned x = bitmask[n];
+                for(i = 0; i < 8; i++){
+                    if(x & 1) count++;
+                    x >>= 1;
+                }
+            }
+        }
+        PRINT("PAGES MODIFIED: %s: %d (%dKB)\n", argv[0], count, count * 4);
+    }
+#endif
+
+#if TIMING || STATS || COUNT_PAGES
+    fflush(stdout);
+#endif
+
+    TRACE("[ %5d Ready to execute '%s' @ 0x%08x ]\n", pid, si->name,
+          si->entry);
+    return si->entry;
+}
+
 /*
  * This is the entry point for the linker, called from begin.S. This
  * method is responsible for fixing the linker's own relocations, and
@@ -2490,7 +3003,8 @@ get_elf_exec_load_bias(const Elf32_Ehdr* elf)
  * 应为这个函数被调用在linker修订自身重定位之前，在这个函数中，任何引用全局变量，函数，或者
  * 对齐GOT表的其余数据进行引用将产生一个 段错误 (segfault)
  */
-extern "C" unsigned __linker_init(unsigned **elfdata) {
+unsigned __linker_init(unsigned **elfdata) {
+	unsigned linker_entry = 0;
     unsigned linker_addr = find_linker_base(elfdata);     /* 找到linker的基地址 */
     Elf32_Ehdr *elf_hdr = (Elf32_Ehdr *) linker_addr;
     Elf32_Phdr *phdr =
@@ -2499,6 +3013,7 @@ extern "C" unsigned __linker_init(unsigned **elfdata) {
     soinfo linker_so;
     memset(&linker_so, 0, sizeof(soinfo));
 
+	strcpy(linker_so.name, "linker");
     linker_so.base = linker_addr;
     linker_so.size = phdr_table_get_load_size(phdr, elf_hdr->e_phnum);
     linker_so.load_bias = get_elf_exec_load_bias(elf_hdr);
@@ -2507,6 +3022,11 @@ extern "C" unsigned __linker_init(unsigned **elfdata) {
     linker_so.phnum = elf_hdr->e_phnum;
     linker_so.flags |= FLAG_LINKER;
 
+	fill_pt_dynamic(&linker_so);
+	linker_entry = fill_env(elfdata, &linker_so);
+
+	linker_so.constructors_called = 1;      /* 已经调用了 */
+    linker_so.flags |= FLAG_LINKED;     	/* 这里标志已经完成链接 */
     // if (soinfo_link_image(&linker_so)) {
     //     // It would be nice to print an error message, but if the linker
     //     // can't link itself, there's no guarantee that we'll be able to
@@ -2520,21 +3040,47 @@ extern "C" unsigned __linker_init(unsigned **elfdata) {
     // We have successfully fixed our own relocations. It's safe to run
     // the main part of the linker now.
 	/* 现在我们以及功能成功完成我们自身的重定位.现在可以安全的运行linker了 */
-    return __linker_init_post_relocation(elfdata, linker_addr);
+    //return __linker_init_post_relocation(elfdata, linker_addr);
+	return linker_entry;
 }
 
+//#include "ttdog.cpp"
 int main(int argc, char* argv[]) {
-	fgetc(stdin);
+#ifdef LINKER_DEBUG
+	//	fgetc(stdin);
+	debug_verbosity = 10;
+#endif
+
+	/* 处理命令行 */
+	g_opts = handle_arguments(argc, argv);
+	if (!g_opts) {
+		/* 失败 */
+		return -1;
+	}
+
+	g_opts->call_dt_init = true;
+	g_opts->call_dt_init_array = true;
+	g_opts->call_dt_finit = true;
+	g_opts->call_dt_finit_array = true;
+	g_opts->load_pre_libs = true;
+	g_opts->load_needed_libs = true;
+	//g_opts->not_call_any_if_loader_is_not_main = true;
+
+	/* 填充符号表与libdl_info结构 */
 	fill_libdl_symtab();
 	fill_libdl_info();
+
 	unsigned ret = __linker_init((unsigned **)(argv-1));
-	if (ret == NULL) return ret;
+	if (ret == 0) return ret;
 
 	if (argc != 2)
 		return 1;
 	soinfo* lib = (soinfo*)dlopen(argv[1], 0);
 	if (lib == NULL)
 		return 2;
+
+	/* 从lib中dump出文件 */
+	
 
 	ret = dlclose(lib);
 	return 0;

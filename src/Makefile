@@ -43,17 +43,19 @@ STRIP := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_6
 # 打包选项
 ARFLAGS := cr
 
+CFLAGS += -DANDROID_ARM_LINKER
+
 # 开启调试选项
 ifdef DEBUG
 CFLAGS += -g3 -O0
-CFLAGS += -DANDROID_ARM_LINKER -DLINKER_DEBUG=1
+CFLAGS += -DLINKER_DEBUG=1 -DLOG_TO_STDOUT=1
 else
 CFLAGS += -DNODEBUG -DLINKER_DEBUG=0
+CFLAGS += -O3
 endif
 
-ifdef TEST_TDOG
-CFLAGS += -DTEST_TDOG
-endif
+# UDOG标识
+CFLAGS += -DUDOG
 
 
 # 是否使用地址无关代码
@@ -76,7 +78,9 @@ OBJECTS=linker.o \
 	linker_format.o \
 	linker_phdr.o \
 	dlfcn.o \
-	rt.o
+	rt.o \
+	options.o	
+
 # debugger.o
 
 SOURCES=linker.cpp \
@@ -84,7 +88,8 @@ SOURCES=linker.cpp \
 	linker_format.cpp \
 	linker_phdr.cpp \
 	dlfcn.cpp \
-	rt.cpp
+	rt.cpp \
+	options.cpp
 
 HEADERS=linker.h \
 	linker_debug.h \
@@ -97,7 +102,10 @@ test_aux: test_aux.cpp
 
 # 这里有一个链接顺序的问题，必须首先链接.o文件以及.c文件x
 # 随后才可以 链接.a文件，否则将找不到一些符号的定义
-xlinker: $(OBJECTS) $(SOURCES) $(HEADERS)
+# xlinker: $(OBJECTS) $(SOURCES) $(HEADERS)
+# 	$(CXX) $(CXXFLAGS) $(OBJECTS) libsupc++.a -o $@
+
+udog: $(OBJECTS) $(SOURCES) $(HEADERS)
 	$(CXX) $(CXXFLAGS) $(OBJECTS) libsupc++.a -o $@
 
 linker.o: linker.cpp
@@ -110,6 +118,9 @@ linker_format.o: linker_format.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 dlfcn.o: dlfcn.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+options.o: options.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # debugger.o: debugger.cpp

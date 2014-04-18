@@ -276,6 +276,11 @@ format_fd(int fd, const char *format, ...)
 #include <fcntl.h>
 #include <sys/uio.h>
 
+/* prio
+ * tag 标记
+ * fmt 格式化
+ * args 参数
+ */
 static int log_vprint(int prio, const char *tag, const char *fmt, va_list  args)
 {
     char buf[1024];
@@ -285,7 +290,11 @@ static int log_vprint(int prio, const char *tag, const char *fmt, va_list  args)
     result = vformat_buffer(buf, sizeof buf, fmt, args);
 
     if (log_fd < 0) {
+#ifdef LOG_TO_STDOUT
+		log_fd = fileno(stdout);
+#else
         log_fd = open("/dev/log/main", O_WRONLY);
+#endif
         if (log_fd < 0)
             return result;
     }
@@ -294,10 +303,13 @@ static int log_vprint(int prio, const char *tag, const char *fmt, va_list  args)
         ssize_t ret;
         struct iovec vec[3];
 
+		/* 类型 */
         vec[0].iov_base = (unsigned char *) &prio;
         vec[0].iov_len = 1;
+		/* 标记 */
         vec[1].iov_base = (void *) tag;
         vec[1].iov_len = strlen(tag) + 1;
+		/* 内容 */
         vec[2].iov_base = (void *) buf;
         vec[2].iov_len = strlen(buf) + 1;
 

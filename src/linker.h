@@ -97,9 +97,9 @@ typedef struct soinfo soinfo;
 #define FLAG_EXE        0x00000004 /* 可执行文件 */
 #define FLAG_LINKER     0x00000010 /* 链接器自身 */
 
-#define SOINFO_NAME_LEN 128
+#define SOINFO_NAME_LEN 128 
 
-	/* so信息结构 */
+/* so信息结构 */
 struct soinfo
 {
     char name[SOINFO_NAME_LEN];       /* SO名称 */
@@ -163,12 +163,15 @@ struct soinfo
     unsigned refcount;
     struct link_map linkmap;
 
-    int constructors_called;
+    int constructors_called;                   /* 构造函数已经被调用 */
 
     /* When you read a virtual address from the ELF file, add this
      * value to get the corresponding address in the process' address space */
     Elf32_Addr load_bias;
     int has_text_relocations;
+
+	/* 表明是否是从主程序中调用 */
+	//int loader_is_main;
 };
 
 
@@ -233,6 +236,7 @@ int soinfo_unload(soinfo* si);
 Elf32_Sym *soinfo_find_symbol(soinfo* si, const void *addr);
 Elf32_Sym *soinfo_lookup(soinfo *si, const char *name);
 void soinfo_call_constructors(soinfo *si);
+	void soinfo_call_constructors_from_dlopen(soinfo *si);
 
 #ifdef __cplusplus
 };
