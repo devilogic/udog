@@ -1,135 +1,134 @@
-# MAKEFILE for linux GCC
+#
+# Makefile - needs GNU make 3.81 or better
+#
+# Copyright (C) 2013-2014 4dog.cn
 #
 
-# The version
-VERSION=1.0
-
-PLATFORM := $(shell uname | sed -e 's/_.*//')
-
-# tools
-ifndef COPY
-COPY=cp
+# 确定是否是正确的Make版本
+ifneq ($(findstring $(firstword $(MAKE_VERSION)),3.77 3.78 3.78.1 3.79 3.79.1 3.80),)
+$(error GNU make 3.81 or better is required)
 endif
 
-ifndef RM
-RM=rm
+# 定义源目录,取最后一个make文件的,也就是当前处理的make文件的路径作为源目录
+# sed的作用是如果文件名以$结尾,则去掉这个$号
+ifndef srcdir
+srcdir := $(dir $(word $(words $(MAKEFILE_LIST)),$(MAKEFILE_LIST)))
+srcdir := $(shell echo '$(srcdir)' | sed 's,/*$$,,')
 endif
 
-ifndef MAKE
-MAKE=make
+# 设定顶级目录
+ifndef top_srcdir
+top_srcdir := $(srcdir)/..
 endif
 
-# NDK tools
-SYSROOT := $(NDK_HOME)/platforms/android-8/arch-arm/
-ADDR2LINE := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-addr2line
-AR := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-ar
-AS := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-as
-CC := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-gcc --sysroot=$(SYSROOT)
-CXX := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-g++ --sysroot=$(SYSROOT)
-GDB := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-gdb
-GDBTUI := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-gdbtui
-GPROF := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-gprof
-LD := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-ld --sysroot=$(SYSROOT)
-NM := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-nm
-OBJCOPY := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-objcopy
-OBJDUMP := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-objdump
-RANLIB := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-ranlib
-READELF := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-readelf
-RUN := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-run
-SIZE := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-size
-STRINGS := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strings
-STRIP := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip
+# 如果源目录非当前目录则设定VPATH
+ifneq ($(srcdir),.)
+##$(info Info: using VPATH . $(srcdir))
+VPATH := . $(srcdir)
+endif
 
-# 打包选项
-ARFLAGS := cr
+# 包含全局配置与本地配置脚本
+include $(wildcard $(top_srcdir)/Makevars.global $(srcdir)/Makevars.local)
 
-# 开启调试选项
-ifdef DEBUG
-CFLAGS += -g3 -O0
-CFLAGS += -DANDROID_ARM_LINKER -DLINKER_DEBUG=1
+# -r(--no-builtin-rules)禁止make使用任何隐含规则
+# -R(--no-builtin-variabes)禁止make使用任何作用于变量上的隐含规则
+MAKEFLAGS += -rR
+.SUFFIXES:
+export SHELL = /bin/sh
+# call函数的参数模板e
+# $($1)负责展开选项
+# $(EXTRA_$1)表示当前选项的扩展选项,例如:CXXFLAGS,则展开变量$(EXTRA_CXXFLAGS)
+# $($(project)_$1)表示针对tdog的选项,例如:CXXFLAGS,则展开变量$(tdog_CXXFLAGS)
+# $($(basename $(notdir $@)).$1) 表示针对某个文件的选项,例如:CXXFLAGS,$@=linker.cpp
+# 则展开变量$(linker.CXXFLAGS)
+# 针对几个层级进行编译或者链接或者其他操作的参数构造
+override e = $($1) $(EXTRA_$1) $($(project)_$1) $($(basename $(notdir $@)).$1)
+
+# 指定编译器
+# ifeq ($(CXX),)
+# CXX = g++
+# endif
+
+# 如果USE_GNUC之前定义过,则保持之前的值,否则则默认开启
+# ifneq ($(findstring $(firstword $(CXX)),g++),)
+# USE_GNUC ?= 1
+# endif
+
+# 如果USE_GNUC等于1则设定相应编译选项
+ifeq ($(USE_GNUC),1)
+
+# 调试编译
+ifeq ($(DEBUG),1)
+CXXFLAGS += -O0 -g3
 else
-CFLAGS += -DNODEBUG -DLINKER_DEBUG=0
+CXXFLAGS += -O3
 endif
 
-ifdef TEST_TDOG
-CFLAGS += -DTEST_TDOG
-endif
-
-
-# 是否使用地址无关代码
-ifdef PIC
-CFLAGS += -fpic
-endif
-
-# 是否要编译APP
-ifdef APP
-CFLAGS += -DAPP
-ifdef PIC
-CFLAGS += -fpie
+# 体系架构
+ifeq ($(ANDROID),)
+# 在真实的机器下采用指定体系的编译选项
+ifeq ($(ARCH),32)
+CXXFLAGS += -m32
+else
+CXXFLAGS += -m64
 endif
 endif
 
-CXXFLAGS = $(CFLAGS)
+endif
 
-OBJECTS=linker.o \
-	linker_environ.o \
-	linker_format.o \
-	linker_phdr.o \
-	dlfcn.o \
-	rt.o
-# debugger.o
+# 合成编译选项
+CPPFLAGS += $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) # 生成依赖关系使用
+CXXLD ?= $(CXX)
 
-SOURCES=linker.cpp \
-	linker_environ.cpp \
-	linker_format.cpp \
-	linker_phdr.cpp \
-	dlfcn.cpp \
-	rt.cpp
+# 后缀选项
+exeext ?= .out
+libext ?= .a
+objext ?= .o
 
-HEADERS=linker.h \
-	linker_debug.h \
-	linker_format.h \
-	linker_phdr.h \
-	linker_environ.h
+# 文件集合
+local_SOURCES := $(sort $(wildcard $(srcdir)/*.cpp))
+local_OBJECTS := $(notdir $(local_SOURCES:.cpp=$(objext)))
 
-test_aux: test_aux.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@
+# 目标
+all: $(project)$(exeext) | .depend
+.DELETE_ON_ERROR: $(project)$(exeext) $(local_OBJECTS) .depend   # 发生错误时删除
 
-# 这里有一个链接顺序的问题，必须首先链接.o文件以及.c文件x
-# 随后才可以 链接.a文件，否则将找不到一些符号的定义
-xlinker: $(OBJECTS) $(SOURCES) $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(OBJECTS) libsupc++.a -o $@
+# 这里提供了外部控制的HOOK选项
+# 通过project.out变量的值.PRE_LINK_STEP来进行控制
+# 当链接完成后可由project.out变量.POST_LINK_STEP来进行控制
+$(project)$(exeext): $(local_OBJECTS) $($(project)_DEPENDENCIES)
+	$($(notdir $@).PRE_LINK_STEP)
+	$(strip $(CXXLD) $(call e,CPPFLAGS) $(call e,CXXFLAGS) $(call e,LDFLAGS) -o $@ $(local_OBJECTS) $(global_OBJECTS) $(call e,LDADD) $(call e,LIBS))
+	$($(notdir $@).POST_LINK_STEP)
 
-linker.o: linker.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+%.o : %.cpp | .depend
+	$(strip $(CXX) $(call e,CPPFLAGS) $(call e,CXXFLAGS) -o $@ -c $<)
 
-linker_environ.o: linker_environ.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+# 生成依赖文件
+.depend: $(sort $(wildcard $(srcdir)/*.cpp $(srcdir)/*.h)) $(MAKEFILE_LIST)
+	@rm -f $@
 
-linker_format.o: linker_format.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+# 如果是GNU编译器集合
+# 从文件集合中取出.cpp文件依次进行编译,并将编译输出去掉首尾空格写入到.depend文件中
+# 如果非GNU编译器单纯的创建一个.depend的文件
+ifeq ($(USE_GNUC),1)
+	@echo "Updating $@"
+	@$(strip $(CXX) $(call e,CPPFLAGS) -MM) $(filter %.cpp,$^) > $@
+else
+	touch $@
+endif
 
-dlfcn.o: dlfcn.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+# 清除
+mostlyclean clean distclean maintainer-clean:
+	rm -f *.d *.map *.o *.obj *.res .depend tdog.exe tdog.out tdog.ttp tdog$(exeext)
 
-# debugger.o: debugger.cpp
-# 	$(CXX) $(CXXFLAGS) -c $< -o $@
+# 伪目标
+.PHONY: all mostlyclean clean distclean maintainer-clean
 
-objdump: $(OBJDUMP)
-	$(OBJDUMP) $(CMD)
-
-objcopy: $(OBJCOPY)
-	$(OBJCOPY) $(CMD)
-
-readelf: $(READELF)
-	$(READELF) $(CMD)
-
-nm: $(NM)
-	$(NM) $(CMD)
-
-clean_local:
-	-$(RM) -f *.o
-	-$(RM) -f xlinker
-
-clean:
-	-$(RM) -f `find . -type f | grep "[.]o" | xargs`
+ifeq ($(MAKECMDGOALS),mostlyclean)
+else ifeq ($(MAKECMDGOALS),clean)
+else ifeq ($(MAKECMDGOALS),distclean)
+else ifeq ($(MAKECMDGOALS),maintainer-clean)
+else
+-include .depend
+endif
