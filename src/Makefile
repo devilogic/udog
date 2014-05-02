@@ -120,7 +120,7 @@ endif
 
 # 清除
 mostlyclean clean distclean maintainer-clean:
-	rm -f *.d *.map *.o *.obj *.res .depend tdog.exe tdog.out tdog.ttp tdog$(exeext)
+	rm -f *.d *.map *.o *.obj *.res .depend $(project).exe $(project).out $(project).ttp $(project)$(exeext)
 
 # 伪目标
 .PHONY: all mostlyclean clean distclean maintainer-clean

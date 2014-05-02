@@ -59,7 +59,7 @@
 /* Only use printf() during debugging.  We have seen occasional memory
  * corruption when the linker uses printf().
  */
-#if LINKER_DEBUG
+#if LINKER_DEBUG == 1
 #include "linker_format.h"
 
 #ifdef __cplusplus

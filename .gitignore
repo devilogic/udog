@@ -47,4 +47,4 @@ Thumbs.db
 bk*/
 xlinker
 *.out
-udog
+.depend

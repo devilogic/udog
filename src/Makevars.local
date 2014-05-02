@@ -2,36 +2,30 @@
 #DEBUG ?= 1
 #USE_GNUC ?= 1
 ARCH ?= 32
-TDOG_LD_VERSION ?= 2
+XLINKER_VERSION ?= 1
 
 # 设置工程名称
-project ?= tdog_ld
+project ?= xlinker
 
 # 如果USE_GNUC等于1则设定相应编译选项
 ifeq ($(USE_GNUC),1)
 
 # 调试编译
 ifeq ($(DEBUG),1)
-DEFS += -DTDOG_LD_DEBUG=1 -DLINKER_DEBUG=1
+DEFS += -DLINKER_DEBUG=1
 else
-DEFS += -DTDOG_LD_DEBUG=0 -DNODEBUG -DLINKER_DEBUG=0
+DEFS += -DNODEBUG -DLINKER_DEBUG=0
 endif
 
 # 一些自定义的宏设定
-ifeq ($(TDOG_LD_VERSION),1)
-DEFS += -DTDOG_LD_VERSION=1
-else
-DEFS += -DTDOG_LD_VERSION=2
-endif
+DEFS += -D$(XLINKER_VERSION)
 
 # 启用ARM体系下的连接器
 DEFS += -DANDROID_ARM_LINKER=1
 
 # 其余错误编译选项
-# CXXFLAGS_WERROR = -Werror
-# -Wcast-qual 加上这个选项,类型转换很受限制
-# -Wcast-align 类型转换对齐粒度受限制
-CXXFLAGS += -Wall -Wpointer-arith -Wshadow -Wwrite-strings -W -Wno-unused-function
+CXXFLAGS_WERROR = -Werror
+CXXFLAGS += -Wall -Wcast-qual -Wcast-align -Wpointer-arith -Wshadow -Wwrite-strings -W -Wno-unused-function
 CXXFLAGS += $(CXXFLAGS_WERROR)
 
 endif
