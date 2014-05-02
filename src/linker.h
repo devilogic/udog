@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008-2010 The Android Open Source Project
+ * Copyright (C) 2008 The Android Open Source Project
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,105 +26,222 @@
  * SUCH DAMAGE.
  */
 
-#ifndef _LINKER_DEBUG_H_
-#define _LINKER_DEBUG_H_
+#ifndef _LINKER_H_
+#define _LINKER_H_
 
-#include <stdio.h>
-
-#ifndef LINKER_DEBUG
-#error LINKER_DEBUG should be defined to either 1 or 0 in Android.mk
-#endif
-
-/* set LINKER_DEBUG_TO_LOG to 1 to send the logs to logcat,
- * or 0 to use stdout instead.
- */
-#define LINKER_DEBUG_TO_LOG  1
-#define TRACE_DEBUG          1
-#define DO_TRACE_LOOKUP      1
-#define DO_TRACE_RELO        1
-#define TIMING               0
-#define STATS                0
-#define COUNT_PAGES          0
-
-/*********************************************************************
- * You shouldn't need to modify anything below unless you are adding
- * more debugging information.
- *
- * To enable/disable specific debug options, change the defines above
- *********************************************************************/
-
-
-/*********************************************************************/
-
-/* Only use printf() during debugging.  We have seen occasional memory
- * corruption when the linker uses printf().
- */
-#if LINKER_DEBUG
-#include "linker_format.h"
+#include <unistd.h>
+#include <sys/types.h>
+#include <elf.h>
+#include <sys/exec_elf.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <link.h>
 
-	/* 调试linker所需 */
-extern int debug_verbosity;
-#if LINKER_DEBUG_TO_LOG
-extern int format_log(int, const char *, const char *, ...);
-#define _PRINTVF(v,x...)                                        \
-    do {                                                          \
-        if (debug_verbosity > (v)) format_log(5-(v),"linker",x);  \
-    } while (0)
-#else /* !LINKER_DEBUG_TO_LOG */
-extern int format_fd(int, const char *, ...);
-#define _PRINTVF(v,x...)                           \
-    do {                                             \
-        if (debug_verbosity > (v)) format_fd(1, x);  \
-    } while (0)
-#endif /* !LINKER_DEBUG_TO_LOG */
+#define UNUSED __attribute__((unused))
+
+#undef PAGE_MASK
+#undef PAGE_SIZE
+#define PAGE_SIZE 4096
+#define PAGE_MASK (PAGE_SIZE-1)
+
+/* Convenience macros to make page address/offset computations more explicit */
+
+/* Returns the address of the page starting at address 'x' */
+#define PAGE_START(x)  ((x) & ~PAGE_MASK)
+
+/* Returns the offset of address 'x' in its memory page, i.e. this is the
+ * same than 'x' - PAGE_START(x) */
+#define PAGE_OFFSET(x) ((x) & PAGE_MASK)
+
+/* Returns the address of the next page after address 'x', unless 'x' is
+ * itself at the start of a page. Equivalent to:
+ *
+ *  (x == PAGE_START(x)) ? x : PAGE_START(x)+PAGE_SIZE
+ */
+#define PAGE_END(x)    PAGE_START((x) + (PAGE_SIZE-1))
+
+void debugger_init();
+
+/* magic shared structures that GDB knows about */
+
+struct link_map
+{
+    uintptr_t l_addr;             /* 内存加载地址 */
+    char * l_name;                /* 名称 */
+    uintptr_t l_ld;               /* 动态段内存地址 */
+    struct link_map * l_next;
+    struct link_map * l_prev;
+};
+
+// Values for r_debug->state
+enum {
+    RT_CONSISTENT,
+    RT_ADD,
+    RT_DELETE
+};
+
+	/* 对GDB调试器的接口 */
+struct r_debug
+{
+    int32_t r_version;
+    struct link_map * r_map;
+    void (*r_brk)(void);
+    int32_t r_state;
+    uintptr_t r_ldbase;
+};
+
+typedef struct soinfo soinfo;
+
+#define FLAG_LINKED     0x00000001 /* 已经进行链接 */
+#define FLAG_ERROR      0x00000002 /* 打印出错信息 */
+#define FLAG_EXE        0x00000004 /* 可执行文件 */
+#define FLAG_LINKER     0x00000010 /* 链接器自身 */
+
+#define SOINFO_NAME_LEN 128 
+
+/* so信息结构 */
+struct soinfo
+{
+    char name[SOINFO_NAME_LEN];       /* SO名称 */
+    const Elf32_Phdr *phdr;           /* 指向程序段头表 */
+    int phnum;
+    unsigned entry;
+    unsigned base;
+    unsigned size;                    /* 所有可加载段的长度 */
+
+    int unused;  // DO NOT USE, maintained for compatibility.
+
+    unsigned *dynamic;
+
+    unsigned unused2; // DO NOT USE, maintained for compatibility
+    unsigned unused3; // DO NOT USE, maintained for compatibility
+
+    soinfo *next;
+    unsigned flags;
+
+    const char *strtab;
+    Elf32_Sym *symtab;
+
+    unsigned nbucket;
+    unsigned nchain;
+    unsigned *bucket;
+    unsigned *chain;
+
+    unsigned *plt_got;
+
+    Elf32_Rel *plt_rel;
+    unsigned plt_rel_count;
+
+    Elf32_Rel *rel;
+    unsigned rel_count;
+
+    unsigned *preinit_array;
+    unsigned preinit_array_count;
+
+    unsigned *init_array;
+    unsigned init_array_count;
+    unsigned *fini_array;
+    unsigned fini_array_count;
+
+    void (*init_func)(void);
+    void (*fini_func)(void);
+
+#if defined(ANDROID_ARM_LINKER)
+    /* ARM EABI section used for stack unwinding. */
+    unsigned *ARM_exidx;
+    unsigned ARM_exidx_count;
+#elif defined(ANDROID_MIPS_LINKER)
+#if 0
+     /* not yet */
+     unsigned *mips_pltgot
+#endif
+     unsigned mips_symtabno;
+     unsigned mips_local_gotno;
+     unsigned mips_gotsym;
+#endif /* ANDROID_*_LINKER */
+
+    unsigned refcount;
+    struct link_map linkmap;
+
+    int constructors_called;                   /* 构造函数已经被调用 */
+
+    /* When you read a virtual address from the ELF file, add this
+     * value to get the corresponding address in the process' address space */
+    Elf32_Addr load_bias;
+    int has_text_relocations;
+
+	/* 表明是否是从主程序中调用 */
+	//int loader_is_main;
+};
+
+
+extern soinfo libdl_info;
+
+
+#include <asm/elf.h>
+
+#if defined(ANDROID_ARM_LINKER)
+
+// These aren't defined in <arch-arm/asm/elf.h>.
+#define R_ARM_REL32      3
+#define R_ARM_COPY       20
+#define R_ARM_GLOB_DAT   21
+#define R_ARM_JUMP_SLOT  22
+#define R_ARM_RELATIVE   23
+
+#elif defined(ANDROID_MIPS_LINKER)
+
+// These aren't defined in <arch-arm/mips/elf.h>.
+#define R_MIPS_JUMP_SLOT       127
+
+#define DT_MIPS_PLTGOT         0x70000032
+#define DT_MIPS_RWPLT          0x70000034
+
+#elif defined(ANDROID_X86_LINKER)
+
+// x86 has everything it needs in <arch-arm/x86/elf.h>.
+
+#endif /* ANDROID_*_LINKER */
+
+#ifndef DT_INIT_ARRAY
+#define DT_INIT_ARRAY      25
+#endif
+
+#ifndef DT_FINI_ARRAY
+#define DT_FINI_ARRAY      26
+#endif
+
+#ifndef DT_INIT_ARRAYSZ
+#define DT_INIT_ARRAYSZ    27
+#endif
+
+#ifndef DT_FINI_ARRAYSZ
+#define DT_FINI_ARRAYSZ    28
+#endif
+
+#ifndef DT_PREINIT_ARRAY
+#define DT_PREINIT_ARRAY   32
+#endif
+
+#ifndef DT_PREINIT_ARRAYSZ
+#define DT_PREINIT_ARRAYSZ 33
+#endif
+
+soinfo *find_library(const char *name);
+Elf32_Sym *lookup(const char *name, soinfo **found, soinfo *start);
+soinfo *find_containing_library(const void *addr);
+const char *linker_get_error(void);
+
+int soinfo_unload(soinfo* si);
+Elf32_Sym *soinfo_find_symbol(soinfo* si, const void *addr);
+Elf32_Sym *soinfo_lookup(soinfo *si, const char *name);
+void soinfo_call_constructors(soinfo *si);
+	void soinfo_call_constructors_from_dlopen(soinfo *si);
 
 #ifdef __cplusplus
 };
 #endif
 
-#else /* !LINKER_DEBUG */
-#define _PRINTVF(v,f,x...)   do {} while(0)
-#endif /* LINKER_DEBUG */
-
-#define PRINT(x...)          _PRINTVF(-1, x)
-#define INFO(x...)           _PRINTVF(0, x)
-#define TRACE(x...)          _PRINTVF(1, x)
-#define WARN(fmt,args...)    \
-        _PRINTVF(-1, "%s:%d| WARNING: " fmt, __FILE__, __LINE__, ## args)
-#define ERROR(fmt,args...)    \
-        _PRINTVF(-1, "%s:%d| ERROR: " fmt, __FILE__, __LINE__, ## args)
-
-
-#if TRACE_DEBUG
-#define DEBUG(x...)          _PRINTVF(2, "DEBUG: " x)
-#else /* !TRACE_DEBUG */
-#define DEBUG(x...)          do {} while (0)
-#endif /* TRACE_DEBUG */
-
-#if LINKER_DEBUG
-#define TRACE_TYPE(t,x...)   do { if (DO_TRACE_##t) { TRACE(x); } } while (0)
-#else  /* !LINKER_DEBUG */
-#define TRACE_TYPE(t,x...)   do {} while (0)
-#endif /* LINKER_DEBUG */
-
-#if TIMING
-#undef WARN
-#define WARN(x...)           do {} while (0)
-#endif /* TIMING */
-
-#define DEBUG_DUMP_PHDR(phdr, name, pid) do { \
-        DEBUG("%5d %s (phdr = 0x%08x)\n", (pid), (name), (unsigned)(phdr));   \
-        DEBUG("\t\tphdr->offset   = 0x%08x\n", (unsigned)((phdr)->p_offset)); \
-        DEBUG("\t\tphdr->p_vaddr  = 0x%08x\n", (unsigned)((phdr)->p_vaddr));  \
-        DEBUG("\t\tphdr->p_paddr  = 0x%08x\n", (unsigned)((phdr)->p_paddr));  \
-        DEBUG("\t\tphdr->p_filesz = 0x%08x\n", (unsigned)((phdr)->p_filesz)); \
-        DEBUG("\t\tphdr->p_memsz  = 0x%08x\n", (unsigned)((phdr)->p_memsz));  \
-        DEBUG("\t\tphdr->p_flags  = 0x%08x\n", (unsigned)((phdr)->p_flags));  \
-        DEBUG("\t\tphdr->p_align  = 0x%08x\n", (unsigned)((phdr)->p_align));  \
-    } while (0)
-
-#endif /* _LINKER_DEBUG_H_ */
+#endif

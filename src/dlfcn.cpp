@@ -52,7 +52,7 @@ static void set_dlerror(int err)
     dl_err_str = (const char *)&dl_err_buf[0];
 };
 
-void *dlopen(const char *filename, int flag)
+void *dlopen(const char *filename, int flag UNUSED)
 {
     soinfo *ret;
 
@@ -63,7 +63,7 @@ void *dlopen(const char *filename, int flag)
         set_dlerror(DL_ERR_CANNOT_LOAD_LIBRARY);
     } else {
 		/* 调用构造函数 */
-        soinfo_call_constructors(ret);
+        soinfo_call_constructors_from_dlopen(ret);
         ret->refcount++;
     }
     pthread_mutex_unlock(&dl_lock);

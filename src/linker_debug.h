@@ -68,7 +68,7 @@ extern "C" {
 
 	/* 调试linker所需 */
 extern int debug_verbosity;
-#if LINKER_DEBUG_TO_LOG
+#if LINKER_DEBUG_TO_LOG == 1
 extern int format_log(int, const char *, const char *, ...);
 #define _PRINTVF(v,x...)                                        \
     do {                                                          \
@@ -99,19 +99,19 @@ extern int format_fd(int, const char *, ...);
         _PRINTVF(-1, "%s:%d| ERROR: " fmt, __FILE__, __LINE__, ## args)
 
 
-#if TRACE_DEBUG
+#if TRACE_DEBUG == 1
 #define DEBUG(x...)          _PRINTVF(2, "DEBUG: " x)
 #else /* !TRACE_DEBUG */
 #define DEBUG(x...)          do {} while (0)
 #endif /* TRACE_DEBUG */
 
-#if LINKER_DEBUG
+#if LINKER_DEBUG == 1
 #define TRACE_TYPE(t,x...)   do { if (DO_TRACE_##t) { TRACE(x); } } while (0)
 #else  /* !LINKER_DEBUG */
 #define TRACE_TYPE(t,x...)   do {} while (0)
 #endif /* LINKER_DEBUG */
 
-#if TIMING
+#if TIMING == 1
 #undef WARN
 #define WARN(x...)           do {} while (0)
 #endif /* TIMING */

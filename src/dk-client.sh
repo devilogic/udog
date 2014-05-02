@@ -7,7 +7,7 @@
 
 AGdbtui="a-gdbtui"
 TP=1234
-SymbolFile="~/workspace/xlinker/src/udog"
-BreakLine=3050
+SymbolFile="~/workspace/xlinker/src/xlinker.out"
+BreakLine=3018
 
 $AGdbtui

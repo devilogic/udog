@@ -3,7 +3,7 @@
 # 启动本地的调试器，并且与远程对接
 
 rm xlinker
-make xlinker DEBUG=1 TEST_TDOG=1
-adb push ./xlinker /data
+make xlinker DEBUG=1 XLINKER_VERSION=1 all
+adb push ./xlinker.out /data/
 adb push ./libhello.so /data
 adb shell

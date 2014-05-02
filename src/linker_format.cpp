@@ -187,9 +187,9 @@ snprintf(char* buff, size_t bufsize, const char* format, ...)
     return ret;
 }
 
-#if LINKER_DEBUG
+#if LINKER_DEBUG == 1
 
-#if !LINKER_DEBUG_TO_LOG
+#if LINKER_DEBUG_TO_LOG == 0
 
 /*** File descriptor output
  ***/
@@ -270,7 +270,7 @@ format_fd(int fd, const char *format, ...)
  */
 #define  CUSTOM_LOG_VPRINT  1
 
-#if CUSTOM_LOG_VPRINT
+#if CUSTOM_LOG_VPRINT == 1
 
 #include <unistd.h>
 #include <fcntl.h>

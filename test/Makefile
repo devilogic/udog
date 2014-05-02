@@ -1,8 +1,10 @@
-# 全局配置选项
-PLATFORM := $(shell uname | sed -e 's/_.*//')
+# MAKEFILE for linux GCC
+#
 
-# 指定是Android平台编译
-ANDROID := 1
+# The version
+VERSION=1.0
+
+PLATFORM := $(shell uname | sed -e 's/_.*//')
 
 # tools
 ifndef COPY
@@ -18,7 +20,6 @@ MAKE=make
 endif
 
 # NDK tools
-NDK_HOME ?= ~/sdk/android-ndk-r8e
 SYSROOT := $(NDK_HOME)/platforms/android-8/arch-arm/
 ADDR2LINE := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-addr2line
 AR := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-ar
@@ -40,23 +41,56 @@ STRINGS := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86
 STRIP := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip
 
 # 打包选项
-ARFLAGS += cr
+ARFLAGS := cr
 
-# 编译选项
-CXXFLAGS += -fpie
+# 开启调试选项
+ifdef DEBUG
+CFLAGS += -g3 -O0
+CFLAGS += -DDEBUG
+endif
 
-# 全局OBJECTS
-global_OBJECTS += libsupc++.a
+# 是否使用地址无关代码
+ifdef PIC
+CFLAGS += -fpic
+endif
 
-# 全局SOURCES
-global_SOURCES =
+# 是否要编译APP
+ifdef APP
+CFLAGS += -DAPP
+ifdef PIC
+CFLAGS += -fpie
+endif
+endif
 
-# 使用GNUC编译器
-#ifneq ($(findstring $(firstword $(CXX)),g++),)
-USE_GNUC ?= 1
-#endif
+OBJECTS=hello1.o hello2.o hello3.o
+SOURCES=hello1.c hello2.c hello3.c
+HEADERS=
 
-# 交叉工具
+# 这里有一个链接顺序的问题，必须首先链接.o文件以及.c文件x
+# 随后才可以 链接.a文件，否则将找不到一些符号的定义
+hello: $(OBJECTS) $(SOURCES) $(HEADERS)
+	$(CC) $(CFLAGS) $(OBJECTS) -o $@
+
+libhello.a: $(OBJECTS) $(SOURCES) $(HEADERS)
+	$(AR) $(ARFLAGS) $@ $(OBJECTS)
+	$(RANLIB) $@
+
+libhello.so: $(OBJECTS) $(SOURCES) $(HEADERS)
+	$(CC) -shared -Wl,-init=my_init $(OBJECTS) $(LIBS) -o $@
+# $(CC) -Wl,-init=my_init -shared $(OBJECTS) $(LIBS) -o $@
+
+# libfuck.so: fuck.c
+# 	$(CC) -shared fuck.c $(LIBS) -o $@
+
+hello1.o: hello1.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+hello2.o: hello2.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+hello3.o: hello3.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
 objdump: $(OBJDUMP)
 	$(OBJDUMP) $(CMD)
 
@@ -69,3 +103,11 @@ readelf: $(READELF)
 nm: $(NM)
 	$(NM) $(CMD)
 
+clean_local:
+	-$(RM) -f *.o
+	-$(RM) -f *.a
+	-$(RM) -f hello
+
+clean:
+	-$(RM) -f `find . -type f | grep "[.]o" | xargs`
+	-$(RM) -f `find . -type f | grep "[.]a" | xargs`

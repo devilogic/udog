@@ -5,22 +5,22 @@
 # 启动本地的调试器，并且与远程对接
 
 # 默认的目标名称
-Target="./udog"
+Target="./xlinker.out"
 TargetTest="./libhello.so"
 GdbServerPort=1234
 Gdb="a-gdbtui"
 
 echo "[INFO]remove target"
-rm ./udog
+rm $Target
 
 echo "[INFO]make target"
-make udog DEBUG=1
+make DEBUG=1 XLINKER_VERSION=1 all
 
 echo "[INFO]adb push target to /data"
-adb push ./udog /data
+adb push $Target /data
 
 echo "[INFO]adb push target test file to /data"
-adb push ./libhello.so /data
+adb push $TargetTest /data
 
 # grep -Po '(?<=\[\d\]\s)\d+'
 # gdbserver :$GdbServerPort --attach 
