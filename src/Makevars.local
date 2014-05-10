@@ -2,10 +2,10 @@
 #DEBUG ?= 1
 #USE_GNUC ?= 1
 ARCH ?= 32
-XLINKER_VERSION ?= 1
+UDOG_VERSION ?= 1
 
 # 设置工程名称
-project ?= xlinker
+project ?= udog
 
 # 如果USE_GNUC等于1则设定相应编译选项
 ifeq ($(USE_GNUC),1)
@@ -18,7 +18,7 @@ DEFS += -DNODEBUG -DLINKER_DEBUG=0
 endif
 
 # 一些自定义的宏设定
-DEFS += -DLINKER_VERSION=$(XLINKER_VERSION)
+DEFS += -DUDOG_VERSION=$(UDOG_VERSION)
 
 # 启用ARM体系下的连接器
 DEFS += -DANDROID_ARM_LINKER=1

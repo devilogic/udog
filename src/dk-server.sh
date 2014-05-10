@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# 安装xlinker到模拟器
-# 自动启动xlinker到调试器
+# 安装udog到模拟器
+# 自动启动udog到调试器
 # 启动本地的调试器，并且与远程对接
 
 # 默认的目标名称
-Target="./xlinker.out"
-TargetTest="./libhello.so"
+Target="./udog.out"
+TargetTest="-l ./libdvm.so -d ./libdvm_dump.so"
 GdbServerPort=1234
 Gdb="a-gdbtui"
 
@@ -14,7 +14,7 @@ echo "[INFO]remove target"
 rm $Target
 
 echo "[INFO]make target"
-make DEBUG=1 XLINKER_VERSION=1 all
+make DEBUG=1 UDOG_VERSION=1 all
 
 echo "[INFO]adb push target to /data"
 adb push $Target /data
