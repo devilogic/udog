@@ -1,6 +1,9 @@
 #ifndef __OPTIONS_H__
 #define __OPTIONS_H__
 
+#define UNUSED __attribute__((unused))
+#define UDOG_VERSION_STRING "1.0"
+
 struct options_t {
 	bool call_dt_init;
 	bool call_dt_init_array;
@@ -9,9 +12,19 @@ struct options_t {
 	bool load_pre_libs;
 	bool load_needed_libs;
 
-	bool not_call_any_if_loader_is_not_main;
+	bool load;
+	bool dump;
+	bool help;
+	bool version;
+	bool debug;
+
+	char dump_file[128];
+	char target_file[128];
 };
 
 struct options_t* handle_arguments(int argc, char* argv[]);
+void usage();
+void show_help();
+void show_version();
 
 #endif

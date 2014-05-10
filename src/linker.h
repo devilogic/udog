@@ -53,6 +53,8 @@ extern "C" {
 
 /* Returns the offset of address 'x' in its memory page, i.e. this is the
  * same than 'x' - PAGE_START(x) */
+/* 实际上这个返回了当前偏移值 - PAGE_START(x) 之间的差值
+ */
 #define PAGE_OFFSET(x) ((x) & PAGE_MASK)
 
 /* Returns the address of the next page after address 'x', unless 'x' is
