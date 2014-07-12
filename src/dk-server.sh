@@ -7,7 +7,7 @@
 # 默认的目标名称
 Target="./udog.out"
 TargetTest="./libiSecurityPAB.so"
-TargetParam="--dump=./libiSecurityPAB.so.dump ./libiSecurityPAB.so"
+TargetParam="--dump=./libiSecurityPAB.so.dump --debug=10 ./libiSecurityPAB.so"
 GdbServerPort=1234
 Gdb="a-gdbtui"
 
