@@ -6,7 +6,7 @@
 #include <getopt.h>
 
 void usage() {
-	printf("udog [options] files...\n");
+	printf("udog [options] file\n");
 	printf("http://www.nagapt.com\n");
 	show_version();
 }
@@ -17,13 +17,17 @@ void show_version() {
 
 void show_help() {
 	printf("\t----------------------------------------\n");
-	printf("\t|==== Android Native Lib Cracker ====|\n");
+	printf("\t|==== Android Native Lib Cracker ====  |\n");
 	printf("\t----------------------------------------\n");
-	printf("udog [options]\n");
-	printf("-l, --load <file>                   load so file\n");
-	printf("-d, --dump <file>                   dump load so to file\n");
+	printf("udog [options] file\n");
+	printf("-d, --dump=file                     dump load so to file\n");
+	printf("--clear-entry                       clear DT_INIT value\n");
+	printf("-c, --check                         print code sign\n");
+	printf("--xcto=offset(hex)                  set xct offset\n");
+	printf("--xcts=size(hex)                    set xct size\n");
 	printf("-h, --help                          show help\n");
 	printf("-v, --version                       show version\n");
+	printf("--debug=level                       show debug information\n");
 	printf("http://www.nagapt.com\n");
 	show_version();
 	printf("\n");
@@ -41,46 +45,66 @@ struct options_t* handle_arguments(int argc, char* argv[]) {
 
 	int opt;
 	int longidx;
-	int load = 0, dump = 0, help = 0, version = 0,
-		debug = 0;
+	int dump = 0, help = 0, version = 0,
+		debug = 0, check = 0, xcto = 0,
+		xcts = 0, clear_entry = 0;
 
 	if (argc == 1) {
 		return NULL;
 	}
 
-	const char* short_opts = "l:hvd:";
+	const char* short_opts = ":hvcd:";
 	struct option long_opts[] = {
-		{ "load", 1, &load, 1 },
-	 	{ "dump", 1, &dump, 2 },
-		{ "help", 0, &help, 3 },
-		{ "version", 0, &version, 4 },
-		{ "debug", 0, &debug, 5 },
+	 	{ "dump", 1, &dump, 1 },
+		{ "help", 0, &help, 2 },
+		{ "version", 0, &version, 3 },
+		{ "debug", 1, &debug, 4 },
+		{ "check", 0, &check, 5 },
+		{ "xcto", 1, &xcto, 6 },
+		{ "xcts", 1, &xcts, 7 },
+		{ "clear-entry",0, &clear_entry, 8 },
 	 	{ 0, 0, 0, 0 }
 	};
 
 	while ((opt = getopt_long(argc, argv, short_opts, long_opts, &longidx)) != -1) {
 		switch (opt) {
 		case 0:
-			if (load == 1) {
-				opts.load = true;
-				strcpy(opts.target_file, optarg);
-			} else if (dump == 2) {
+			if (dump == 1) {
 				opts.dump = true;
+				opts.not_relocal = false;
+				opts.make_sectabs = true;
 				strcpy(opts.dump_file, optarg);
-			} else if (help == 3) {
+				opts.load = true;
+				dump = 0;
+			} else if (help == 2) {
 				opts.help = true;
-			} else if (version == 4) {
+				help = 0;
+			} else if (version == 3) {
 				opts.version = true;
-			} else if (debug == 5) {
+				version = 0;
+			} else if (debug == 4) {
 				opts.debug = true;
+				opts.debuglevel = atoi(optarg);
+				debug = 0;
+			} else if (check == 5) {
+				opts.check = true;
+				check = 0;
+			} else if (xcto == 6) {
+				opts.xct_offset = strtol(optarg, NULL, 16);
+				xcto = 0;
+			} else if (xcts == 7) {
+				opts.xct_size = strtol(optarg, NULL, 16);
+				xcts = 0;
+			} else if (clear_entry == 8) {
+				opts.clear_entry = true;
+				clear_entry = 0;
 			} else {
 				//printf("unknow options: %c\n", optopt);
 				return NULL;
 			}
 			break;
-		case 'l':
-			opts.load = true;
-			strcpy(opts.target_file, optarg);
+		case 'c':
+			opts.check = true;
 			break;
 		case 'h':
 			opts.help = true;
@@ -90,7 +114,10 @@ struct options_t* handle_arguments(int argc, char* argv[]) {
 			break;
 		case 'd':
 			opts.dump = true;
+			opts.not_relocal = false;
+			opts.make_sectabs = true;
 			strcpy(opts.dump_file, optarg);
+			opts.load = true;
 			break;
 		case '?':
 			//printf("unknow options: %c\n", optopt);
@@ -102,6 +129,13 @@ struct options_t* handle_arguments(int argc, char* argv[]) {
 			break;
 		}/* end switch */
 	}/* end while */
+
+	/* 无文件 */
+	if (optind == argc) {
+		return NULL;
+	}
+
+	strcpy(opts.target_file, argv[optind]);
 
 	return &opts;
 }

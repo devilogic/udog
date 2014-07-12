@@ -6,7 +6,8 @@
 
 # 默认的目标名称
 Target="./udog.out"
-TargetTest="-l ./libdvm.so -d ./libdvm_dump.so"
+TargetTest="./libiSecurityPAB.so"
+TargetParam="--dump=./libiSecurityPAB.so.dump ./libiSecurityPAB.so"
 GdbServerPort=1234
 Gdb="a-gdbtui"
 
@@ -31,5 +32,5 @@ adb forward tcp:$GdbServerPort tcp:$GdbServerPort
 echo "[INFO]start debugging $Target"
 adb shell <<EOF
 cd /data
-gdbserver :$GdbServerPort $Target $TargetTest
+gdbserver :$GdbServerPort $Target $TargetParam
 EOF

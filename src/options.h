@@ -13,11 +13,18 @@ struct options_t {
 	bool load_needed_libs;
 
 	bool load;
+	bool not_relocal;              /* 不进行重定位 */
+	bool make_sectabs;             /* 制作节表 */
 	bool dump;
 	bool help;
 	bool version;
 	bool debug;
+	bool check;
+	bool clear_entry;
 
+	int debuglevel;
+	unsigned xct_offset;
+	unsigned xct_size;
 	char dump_file[128];
 	char target_file[128];
 };
