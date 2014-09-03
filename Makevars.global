@@ -2,7 +2,10 @@
 PLATFORM := $(shell uname | sed -e 's/_.*//')
 
 # 指定是Android平台编译
-ANDROID := 1
+ANDROID ?= 1
+
+# ARM:1,X86:2,MIPS:3
+CPU ?= 1
 
 # tools
 ifndef COPY
@@ -17,8 +20,12 @@ ifndef MAKE
 MAKE=make
 endif
 
-# NDK tools
+# 设定NDK
 NDK_HOME ?= ~/sdk/android-ndk-r8e
+# 判断编译器集合
+ifeq ($(ANDROID),1)
+ifeq ($(CPU),1)
+# ARM编译
 SYSROOT := $(NDK_HOME)/platforms/android-8/arch-arm/
 ADDR2LINE := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-addr2line
 AR := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-ar
@@ -38,6 +45,48 @@ RUN := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/
 SIZE := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-size
 STRINGS := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strings
 STRIP := $(NDK_HOME)/toolchains/arm-linux-androideabi-4.4.3/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip
+else
+# X86编译
+SYSROOT := $(NDK_HOME)/platforms/android-14/arch-x86/
+ADDR2LINE := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-addr2line
+AR := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-ar
+AS := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-as
+CC := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-gcc --sysroot=$(SYSROOT)
+CXX := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-g++ --sysroot=$(SYSROOT)
+GDB := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-gdb
+GDBTUI := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-gdbtui
+GPROF := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-gprof
+LD := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-ld --sysroot=$(SYSROOT)
+NM := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-nm
+OBJCOPY := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-objcopy
+OBJDUMP := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-objdump
+RANLIB := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-ranlib
+READELF := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-readelf
+RUN := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-run
+SIZE := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-size
+STRINGS := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-strings
+STRIP := $(NDK_HOME)/toolchains/x86-4.4.3/prebuilt/linux-x86_64/bin/i686-linux-android-strip
+endif
+else
+ADDR2LINE := addr2line
+AR := ar
+AS := as
+CC := gcc
+CXX := g++
+GDB := gdb
+GDBTUI :=
+GPROF :=  gprof
+LD := ld
+NM := nm
+OBJCOPY := objcopy
+OBJDUMP := objdump
+RANLIB := ranlib
+READELF := readelf
+RUN := run
+SIZE := size
+STRINGS := strings
+STRIP := strip
+endif
 
 # 打包选项
 ARFLAGS += cr
@@ -46,7 +95,11 @@ ARFLAGS += cr
 CXXFLAGS += -fpie
 
 # 全局OBJECTS
+ifeq ($(ANDROID),1)
 global_OBJECTS += libsupc++.a
+else
+global_OBJECTS +=
+endif
 
 # 全局SOURCES
 global_SOURCES =

@@ -32,7 +32,9 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <elf.h>
+#ifdef ANDROID
 #include <sys/exec_elf.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -181,8 +183,9 @@ struct soinfo
 
 extern soinfo libdl_info;
 
-
+#ifdef ANDROID
 #include <asm/elf.h>
+#endif
 
 #if defined(ANDROID_ARM_LINKER)
 

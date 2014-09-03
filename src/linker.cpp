@@ -61,7 +61,21 @@
 #include "linker_phdr.h"
 #include "linker.h"
 #include "xdlfcn.h"
+#include "crc.h"
 #include "options.h"
+
+
+struct elfinfo_t {
+	unsigned done;
+	unsigned dynamic_offset;          /* PT_DYNAMIC段的文件/内存偏移 */
+	unsigned dynamic_size;            /* PT_DYNAMIC段的长度 */
+
+	unsigned dt_hash_offset;          /* DT_HASH节的文件/内存偏移 */
+	unsigned dt_symtab_offset;        /* DT_SYMTAB节的文件/内存偏移 */
+	unsigned dt_strtab_offset;        /* DT_STRTAB节的文件/内存偏移 */
+};
+
+struct elfinfo_t g_infos;
 struct options_t* g_opts = NULL;
 
 #define ALLOW_SYMBOLS_FROM_MAIN 1
@@ -253,6 +267,24 @@ static void fill_libdl_info() {
 }
 /********************************************************************************/
 
+unsigned umin(unsigned a, unsigned b) {
+	return (a < b) ? a : b;
+}
+
+unsigned umax(unsigned a, unsigned b) {
+	return (a >= b) ? a : b;
+}
+
+unsigned up4(unsigned x) {
+	return ~3u & (3 + x);
+}
+
+unsigned upx(unsigned x) {
+	unsigned page_size = 1 << 12;
+	unsigned page_mask = page_size - 1;
+	return ~(page_mask) & (page_mask + x);
+}
+
 /* 加载SO，很重要的函数 */
 static int soinfo_link_image(soinfo *si);
 
@@ -275,10 +307,7 @@ static const char *ldpreload_names[LDPRELOAD_MAX + 1];   /* 预加载库名称 *
 static soinfo *preloads[LDPRELOAD_MAX + 1];              /* 预加载库数组 */
 
 /* 链接器调试 */
-#if LINKER_DEBUG == 1
 int debug_verbosity;                                     /* 详细调试信息 */
-#endif
-
 static int pid;                                          /* 进程ID */
 
 /* This boolean is set if the program being loaded is setuid */
@@ -1235,8 +1264,8 @@ static int soinfo_relocate(soinfo *si, Elf32_Rel *rel, unsigned count,
 	/* 遍历重定位项 */
     for (size_t idx = 0; idx < count; ++idx, ++rel) {
 		/* 从r_info中读取重定位的类型与符号对应的符号表下标 */
-        unsigned type = ELF32_R_TYPE(rel->r_info);
-        unsigned sym = ELF32_R_SYM(rel->r_info);
+        unsigned type = ELF32_R_TYPE(rel->r_info); /* 重定位的类型 */
+        unsigned sym = ELF32_R_SYM(rel->r_info);   /* 符号索引 */
 		/* 获取到要重定位的内存地址 */
         unsigned reloc = (unsigned)(rel->r_offset + si->load_bias);
         unsigned sym_addr = 0;
@@ -1856,6 +1885,14 @@ static int soinfo_link_image(soinfo *si)
         }
     }
 
+	/* 记录 */
+	if (g_infos.done == 0) {
+		unsigned dynamic_size = dynamic_count * 8;
+		unsigned dynamic_offset = (unsigned)si->dynamic - (unsigned)base;
+		g_infos.dynamic_offset = dynamic_offset;
+		g_infos.dynamic_size = dynamic_size;
+	}
+
 #ifdef ANDROID_ARM_LINKER
 	/* ARM体系的linker, .ARM.exidx节,可有可无 */
     (void) phdr_table_get_arm_exidx(phdr, phnum, base,
@@ -1868,6 +1905,8 @@ static int soinfo_link_image(soinfo *si)
         switch(*d++){
         case DT_HASH:
 			/* HASH表 */
+			if (g_infos.done == 0)
+				g_infos.dt_hash_offset = *d;
             si->nbucket = ((unsigned *) (base + *d))[0];
             si->nchain = ((unsigned *) (base + *d))[1];
             si->bucket = (unsigned *) (base + *d + 8);
@@ -1875,10 +1914,14 @@ static int soinfo_link_image(soinfo *si)
             break;
         case DT_STRTAB:
 			/* 字符串表 */
+			if (g_infos.done == 0)
+				g_infos.dt_strtab_offset = *d;
             si->strtab = (const char *) (base + *d);
             break;
         case DT_SYMTAB:
 			/* 符号表 */
+			if (g_infos.done == 0)
+				g_infos.dt_symtab_offset = *d;
             si->symtab = (Elf32_Sym *) (base + *d);
             break;
         case DT_PLTREL:
@@ -2075,6 +2118,11 @@ static int soinfo_link_image(soinfo *si)
 		*pneeded = NULL;
 	}
 
+	/* 不经过重定位 */
+	if (g_opts->not_relocal == true) {
+		goto done_relocal;
+	}
+
 	/* linker自身并无此选项 */
     if (si->has_text_relocations) {
 		/* 对自身代码进行重定位，没有开启PIC选项编译 
@@ -2112,10 +2160,6 @@ static int soinfo_link_image(soinfo *si)
     }
 #endif
 
-	/* 这里标志已经完成链接 */
-    si->flags |= FLAG_LINKED;
-    DEBUG("[ %5d finished linking %s ]\n", pid, si->name);
-
     if (si->has_text_relocations) {
 		/* 对自身进行重定位 */
         /* All relocations are done, we can protect our segments back to
@@ -2127,6 +2171,13 @@ static int soinfo_link_image(soinfo *si)
             goto fail;
         }
     }
+
+	/* 已经完成重定位 */
+ done_relocal:
+
+	/* 这里标志已经完成链接 */
+    si->flags |= FLAG_LINKED;
+    DEBUG("[ %5d finished linking %s ]\n", pid, si->name);
 
     /* We can also turn on GNU RELRO protection */
 	/* 将PT_GNU_RELRO段设置为只读 */
@@ -2154,6 +2205,8 @@ static int soinfo_link_image(soinfo *si)
     notify_gdb_of_load(si);
 #endif
 
+	/* 设置完成 */
+	if (g_infos.done == 0) g_infos.done = 1;
     return 0;
 
  fail:
@@ -3012,6 +3065,18 @@ unsigned __linker_init(unsigned **elfdata) {
 	return linker_entry;
 }
 
+void fix_entry(unsigned char* buf, soinfo* lib) {
+	unsigned* d = lib->dynamic;
+	while (*d) {
+		if (*d == DT_INIT) {
+			unsigned offset = (unsigned)(d+1) - lib->base;
+			*(unsigned*)(void*)(buf + offset) = 0;
+			break;
+		}
+		d += 2;
+	}
+}
+
 int dump_file(soinfo* lib) {
 	FILE* fp = fopen(g_opts->dump_file, "w");
 	if (NULL ==fp) {
@@ -3049,6 +3114,10 @@ int dump_file(soinfo* lib) {
 		phdr->p_filesz = s;
 	}
 
+	/* 是否清除DT_INIT入口点 */
+	if (g_opts->clear_entry)
+		fix_entry(buf, lib);
+
 	/* 写入 */
 	ret = fwrite((void*)buf, 1, dump_size, fp);
 
@@ -3059,11 +3128,136 @@ int dump_file(soinfo* lib) {
 	return 0;
 }
 
-int main(int argc, char* argv[]) {
-#if LINKER_DEBUG == 1
-	debug_verbosity = 10;
-#endif
+Elf32_Phdr* elf_get_1th_PT_LOAD(unsigned char* fmap) {
+	Elf32_Ehdr* hdr = (Elf32_Ehdr*)(void*)(fmap);
+	Elf32_Phdr* phdr = (Elf32_Phdr*)(void*)(fmap + hdr->e_phoff);
+	int phnum = hdr->e_phnum;
 
+	int j = phnum;
+	for (; --j >= 0; ++phdr)
+		if (PT_LOAD == phdr->p_type) {
+			return phdr;
+		}
+	return NULL;
+}
+
+unsigned elf_get_offset_from_address(unsigned char* fmap, unsigned const addr) {
+	Elf32_Ehdr* hdr = (Elf32_Ehdr*)(void*)(fmap);
+	Elf32_Phdr* phdr = (Elf32_Phdr*)(void*)(fmap + hdr->e_phoff);
+	int phnum = hdr->e_phnum;
+
+	int j = phnum;
+	for (; --j >= 0; ++phdr)
+		if (PT_LOAD == phdr->p_type) {
+			unsigned const t = addr - phdr->p_vaddr;
+			if (t < phdr->p_filesz) {
+				return t + phdr->p_offset;
+			}
+		}
+	return 0;
+}
+
+unsigned get_text_code(unsigned char* fmap, 
+					   unsigned* xct_va,
+					   unsigned* xct_offset) {
+	Elf32_Ehdr* hdr = (Elf32_Ehdr*)(void*)(fmap);
+	unsigned soff = hdr->e_shoff;
+	int snum = hdr->e_shnum;
+	Elf32_Shdr* shdr = (Elf32_Shdr*)(void*)(fmap + soff);
+	bool find_exe_sec = false;
+	
+	*xct_va = *xct_offset = 0;
+
+	for (int j = snum; --j >= 0; ++shdr) {
+		/* 遇到可执行节 */
+		if (SHF_EXECINSTR & shdr->sh_flags) {
+			/* 这里寻找最后一个可执行节,跳过.plt节 */
+			find_exe_sec = true;
+			*xct_va = umax(*xct_va, shdr->sh_addr);
+		}
+	}
+		
+	/* 检查验证xct_va */
+	if (!find_exe_sec)
+		return 0;
+
+	*xct_offset = elf_get_offset_from_address(fmap, *xct_va);
+
+	Elf32_Phdr* pload = elf_get_1th_PT_LOAD(fmap);
+	if (pload == NULL) return 0;
+
+	unsigned size = pload->p_filesz - *xct_offset;
+
+	return size;
+}
+
+void checkcode_by_x(unsigned char* fmap, const char* str, 
+					unsigned x, unsigned s) {
+	unsigned xct_offset = 0;
+	/* 提取代码段的crc值 */
+	unsigned text_size = s;
+	unsigned char* text = fmap + x;
+	unsigned crc = crc32(text, text_size);
+
+	printf("%s:0x%X <%x:%x>\n", str, crc, xct_offset, text_size);
+}
+
+void checkcode(char* fname, const char* str, unsigned x, unsigned s) {
+	unsigned xct_va = 0, xct_offset = 0;
+	FILE* fp = fopen(fname, "rb");
+	if (fp == NULL) {
+		printf("can not open file:%s\n", fname);
+		return;
+	}
+
+	fseek(fp, 0, SEEK_END);
+	unsigned fsize = ftell(fp);
+	fseek(fp, 0, SEEK_SET);
+	unsigned char* fmap = new unsigned char [fsize+0x10];
+	if (fmap == NULL) return;
+	memset(fmap, 0, fsize+0x10);
+	fread(fmap, 1, fsize, fp);
+
+	/* 提取代码段的crc值 */
+	unsigned text_size = 0;
+	unsigned char* text = NULL;
+	if ((x == 0) || (s == 0)) {
+		text_size = get_text_code(fmap, &xct_va, &xct_offset);
+	} else {
+		text_size = s;
+		xct_offset = x;
+	}
+	text = fmap + xct_offset;
+	unsigned crc = crc32(text, text_size);
+
+	printf("%s:0x%X <%x:%x>\n", str, crc, xct_offset, text_size);
+
+	if (fmap) delete [] fmap;
+	if (fp) fclose(fp);
+}
+
+int make_sectables(char* fname) {
+	//unsigned size = 0;
+	//Elf32_Shdr shdr;
+	FILE* fp = fopen(fname, "wr");
+	if (NULL == fp) {
+		return -1;
+	}
+
+	fseek(fp, 0, SEEK_END);
+
+	/* .dynamic节 */
+	
+	/* 节名表节 */
+	/* 符号节 */
+	/* 字符串节 */
+
+	fflush(fp);
+	fclose(fp);
+	return 0;
+}
+
+int main(int argc, char* argv[]) {
 	/* 处理命令行 */
 	g_opts = handle_arguments(argc, argv);
 	if (!g_opts) {
@@ -3071,6 +3265,9 @@ int main(int argc, char* argv[]) {
 		usage();
 		return -1;
 	}
+
+	/* 设定调试级别 */
+	debug_verbosity = g_opts->debuglevel;
 
 	/* 处理命令行 */
 	if (g_opts->help) {
@@ -3083,6 +3280,9 @@ int main(int argc, char* argv[]) {
 
 	/* 加载库文件 */
 	if (g_opts->load) {
+
+		/* 清空全局信息结构 */
+		memset(&g_infos, 0, sizeof(g_infos));
 
 		/* 填充符号表与libdl_info结构 */
 		fill_libdl_symtab();
@@ -3097,14 +3297,40 @@ int main(int argc, char* argv[]) {
 			return -1;
 		}
 
+		//void* handle = dlsym(lib, "prepare_key");
+		//if (handle) {
+		//	printf("%x\n", *(unsigned*)handle);
+		//}
+
 		/* 从lib中dump出文件 */
 		if (g_opts->dump) {
 			if (dump_file(lib) != 0) {
 				return -1;
 			}
+
+			/* 制作节表 */
+			// if (g_opts->make_sectabs) {
+			// 	if (make_sectables(g_opts->dump_file) != 0) {
+			// 		return -1;
+			// 	}
+			// }			
+		} else {
+			/* 打印代码CRC */
+			if (g_opts->check) {
+				checkcode_by_x((unsigned char*)(lib->base),
+							   "code text crc32",
+							   g_opts->xct_offset,
+							   g_opts->xct_size);
+			}
 		}
-	
 		dlclose(lib);
+	} else {
+		/* 未加载的功能  */
+		if (g_opts->check) {
+			checkcode(g_opts->target_file, "code text crc32", 
+					  g_opts->xct_offset, 
+					  g_opts->xct_size);
+		}
 	}
 	return 0;
 }

@@ -267,8 +267,9 @@ format_fd(int fd, const char *format, ...)
  * that the C library is not initialized yet.
  *
  * You can test that by setting CUSTOM_LOG_VPRINT to 0
+ * 开启CUSTOM_LOG_VPRINT宏即使用自己的日志输出
  */
-#define  CUSTOM_LOG_VPRINT  1
+#define  CUSTOM_LOG_VPRINT  0
 
 #if CUSTOM_LOG_VPRINT == 1
 
@@ -324,7 +325,20 @@ static int log_vprint(int prio, const char *tag, const char *fmt, va_list  args)
 
 #else /* !CUSTOM_LOG_VPRINT */
 
-extern "C" int __libc_android_log_vprint(int  prio, const char* tag, const char*  format, va_list ap);
+//extern "C" int __libc_android_log_vprint(int  prio, const char* tag, const char*  format, va_list ap);
+#define  __libc_android_log_vprint  my_log_vprint
+
+int my_log_vprint(int prio, const char* tag, const char*  format, va_list ap) {
+    int ret;
+    char string_buf[2048] = {0};
+
+    (void) &prio;
+
+    vsprintf(string_buf, format, ap);
+    sprintf(string_buf, "%s %s\n", tag, string_buf);
+    ret = printf(string_buf);
+    return ret;
+}
 
 #endif /* !CUSTOM_LOG_VPRINT */
 
